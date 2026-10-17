@@ -138,8 +138,8 @@ class JoyConInputProvider(InputProvider):
         if s is None:
             return HandInput.neutral(hand, connected=False)
         stick = radial_deadzone(*st.calibrator.normalize(s.stick_raw), self.deadzone)
-        accel_sensor = s.accel_g[-1]
-        gyro_debiased = st.gyro_bias.apply(s.gyro_dps[-1])
+        accel_sensor = s.accel_g[0]               # sub-sample 0 is the newest (measured, see JoyConSample)
+        gyro_debiased = st.gyro_bias.apply(s.gyro_dps[0])
         if hand == "right":
             accel, gyro = self.right_axis_map.apply(accel_sensor), self.right_axis_map.apply(gyro_debiased)
         else:
@@ -147,7 +147,7 @@ class JoyConInputProvider(InputProvider):
         return HandInput(connected=True, stick=stick,
                          buttons={b: d.state for b, d in st.debouncers.items()},
                          accel=accel, gyro=gyro,
-                         accel_sensor=accel_sensor, gyro_sensor=s.gyro_dps[-1])
+                         accel_sensor=accel_sensor, gyro_sensor=s.gyro_dps[0])
 
     def _manage(self) -> None:
         last_attempt = {h: -1e9 for h in HANDS}

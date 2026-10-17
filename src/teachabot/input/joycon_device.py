@@ -72,7 +72,9 @@ class JoyConSample:
     battery_level: int            # 0..8 (pyjoycon 3-bit field)
     stick_raw: tuple[int, int]    # 12-bit, uncalibrated (0..4095), not deadzoned
     buttons: dict[str, int]       # name -> 0/1
-    accel_lsb: tuple[tuple[float, float, float], ...]  # 3 sub-samples, calibrated LSB
+    # 3 IMU sub-samples ~5 ms apart, index 0 = NEWEST, 2 = oldest (verified on 2026-10-17 logs:
+    # ordering 2,1,0 as old->new gives a 40x smoother signal than 0,1,2)
+    accel_lsb: tuple[tuple[float, float, float], ...]  # calibrated LSB
     gyro_lsb: tuple[tuple[float, float, float], ...]
 
     @property
