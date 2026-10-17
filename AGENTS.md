@@ -15,12 +15,14 @@ Joy-Con L/R로 3D 양손 집게를 조종 → 학생 시범 기록 → 실제 �
 - 입력 장치·시뮬레이션·학습·UI 모듈 분리. 게임 코드는 Joy-Con을 직접 참조하지 않는다.
 
 ## 현재 스택
-Python 3.12 (`.venv`, uv), joycon-python 0.2.4 + hidapi 0.15.0. 3D 엔진 미정(Ursina 우선 검토).
+Python 3.12 (`.venv`, uv), joycon-python 0.2.4 + hidapi 0.15.0, numpy, pytest. 입력은 `teachabot.input` (InputProvider: JoyCon/Keyboard/Replay). 3D 엔진 미정(Ursina 우선 검토).
 
 ## 명령
 ```powershell
 .venv\Scripts\python.exe scripts\list_hid_devices.py
-.venv\Scripts\python.exe tests\manual\test_joycon_connection.py
+.venv\Scripts\python.exe tests\manual\test_joycon_connection.py   # Phase 1 장치 테스트
+.venv\Scripts\python.exe tests\manual\test_input_providers.py     # Phase 2 표준 입력 테스트 (--source keyboard 가능)
+.venv\Scripts\python.exe -m pytest -q                             # 자동 테스트
 ```
 수동 테스트는 화면에 체크리스트가 뜨므로, 사용자에게 보이는 창(터미널 패널 등)에서 실행해야 한다.
 

@@ -7,7 +7,15 @@ dependencies = [
     "joycon-python==0.2.4",
     "hidapi==0.15.0",
     "pyglm==2.8.3",
+    "numpy==2.5.4",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest==9.1.1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit", "tests/integration"]
+pythonpath = ["src"]
 
 [build-system]
 requires = ["setuptools>=68"]
