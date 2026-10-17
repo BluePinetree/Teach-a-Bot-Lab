@@ -11,3 +11,5 @@ data/models/
 assets/_check/
 # per-lab-device motion calibration (re-created by the in-app calibration)
 config/motion_calibration.json
+# downloaded model files (see scripts/download_models.ps1)
+models/*.task

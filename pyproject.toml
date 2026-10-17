@@ -9,6 +9,8 @@ dependencies = [
     "pyglm==2.8.3",
     "numpy==2.5.4",
     "ursina==8.3.0",
+    "opencv-python==5.0.0.93",
+    "mediapipe==1.1.1",
 ]
 
 [project.optional-dependencies]
