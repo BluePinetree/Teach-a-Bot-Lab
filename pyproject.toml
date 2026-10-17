@@ -8,6 +8,7 @@ dependencies = [
     "hidapi==0.15.0",
     "pyglm==2.8.3",
     "numpy==2.5.4",
+    "ursina==8.3.0",
 ]
 
 [project.optional-dependencies]

@@ -41,6 +41,21 @@ class _HandState:
         self.reports = 0
 
 
+def _install_reader_error_hook(on_error) -> None:
+    """pyjoycon's reader thread ends with OSError('read error') whenever a Joy-Con
+    disconnects or the process closes the device. That is expected: record it
+    instead of printing a traceback. Other thread errors keep the default hook."""
+    previous = threading.excepthook
+
+    def hook(args):
+        if issubclass(args.exc_type, OSError) and "_update_input_report" in (args.thread.name or ""):
+            on_error(f"{args.thread.name}: {args.exc_value}")
+            return
+        previous(args)
+
+    threading.excepthook = hook
+
+
 class JoyConInputProvider(InputProvider):
     source = "joycon"
 
@@ -59,6 +74,7 @@ class JoyConInputProvider(InputProvider):
         self._thread: threading.Thread | None = None
         self._events_lock = threading.Lock()
         self.events: list[dict] = []  # connection events, newest last
+        _install_reader_error_hook(lambda msg: self._event("reader_stopped", None, detail=msg))
 
     # -- InputProvider ----------------------------------------------------------
 

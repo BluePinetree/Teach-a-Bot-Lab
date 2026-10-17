@@ -6,3 +6,8 @@ data/logs/
 data/demonstrations/
 data/evaluations/
 data/models/
+# Ursina model cache and env-check output
+**/models_compressed/
+assets/_check/
+# per-lab-device motion calibration (re-created by the in-app calibration)
+config/motion_calibration.json
