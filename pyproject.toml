@@ -1,0 +1,17 @@
+[project]
+name = "teachabot"
+version = "0.1.0"
+description = "Teach-a-Bot Lab: Joy-Con teleoperation and imitation learning demo for high-school lab visits"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "joycon-python==0.2.4",
+    "hidapi==0.15.0",
+    "pyglm==2.8.3",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
