@@ -477,7 +477,12 @@ def main() -> None:
                            panel=panel, mode_line=mode_line(),
                            controllers=dict(controllers) if policy is not None else None,
                            history=trainer.history if trainer else None)
-            if video is not None:
+            # record only while something happens (not the idle start screen), so a window left
+            # open does not fill the disk; the video simply skips the waiting time
+            recording = state != "waiting" or (trainer is not None and trainer.state != "idle")
+            if video is not None and not recording:
+                next_video_t = time.perf_counter() - t_run
+            if video is not None and recording:
                 now_v = time.perf_counter() - t_run
                 while next_video_t <= now_v:
                     video.write(cv2.cvtColor(out, cv2.COLOR_RGB2BGR))
