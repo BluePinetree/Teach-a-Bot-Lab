@@ -43,7 +43,9 @@ Python 3.12 (`.venv`, uv), joycon-python 0.2.4 + hidapi 0.15.0, numpy, pytest. *
 .venv\Scripts\python.exe scripts\train_bc.py [--limit k | --curve 1 2 3 5 10]   # 모방학습 + 자동 평가(처음 보는 배치 20판)
 .venv\Scripts\python.exe -m teachabot.aloha_app --policy data\policies\X.npz [--record t01] [--video V.mp4]   # AI가 조종, 스틱/버튼으로 손별 넘겨받기, X(오른쪽)/T = 다시 학습
 .venv\Scripts\python.exe scripts\render_rollout_video.py --policy X.npz --seeds 1000000 1000001 --out V.mp4 --label "..."   # 창 없이 정책 실행 녹화
-.venv\Scripts\python.exe scripts\make_learning_figures.py              # fig13(시범 수별)·fig14(강화학습) 갱신
+.venv\Scripts\python.exe scripts\make_learning_figures.py              # fig13(시범 수별)·fig14(강화학습)·fig16(넘겨받기 효과) 갱신
+.venv\Scripts\python.exe scripts\compare_datasets.py --seeds 0 1 2 --episodes 100   # 시범만 vs 시범+개입, seed별 공정 비교
+.venv\Scripts\python.exe scripts\per_hand_stats.py data\policies\X.npz    # 손별 상자 안 / 들어 올림 / 멈춤
 .venv\Scripts\python.exe scripts\train_rl.py --reward sparse|dense       # 강화학습 기준선 (Ctrl-C로 중단해도 저장)
 ```
 학습 데이터·정책·강화학습 결과·영상은 `data/demos`, `data/policies`, `data/rl_runs`, `data/videos` (git 미추적). 배치 seed: 평가 1,000,000~ / 튜닝 2,000,000~ / AI 시연·개입 3,000,000~ (섞지 말 것). 강화학습 실행 중에도 앱 프레임은 ~25ms로 문제없음.
