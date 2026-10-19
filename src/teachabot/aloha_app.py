@@ -36,6 +36,7 @@ from teachabot.input.replay import InputRecorder
 from teachabot.learning.bc import NumpyPolicy
 from teachabot.learning.demos import DemoWriter
 from teachabot.learning.live import LiveTrainer
+from teachabot.visit import VisitFlow, load_reference
 
 ROOT = Path(__file__).resolve().parents[2]
 FONT_PATH = Path("C:/Windows/Fonts/malgun.ttf")
@@ -50,6 +51,7 @@ WINDOW = "Teach-a-Bot Lab - ALOHA"
 PRACTICE_SEED_BASE = 3_000_000   # AI-mode layouts: unseen in training, separate from the test layouts
 TAKEOVER_STICK = 0.35            # stick deflection that hands an arm to the person
 VIDEO_FPS = 30
+VISIT_REFERENCE = ROOT / "config" / "visit_reference.json"
 
 
 def make_provider(kind: str, replay: Path | None = None) -> InputProvider:
@@ -117,7 +119,8 @@ class Hud:
              source: str, episode: int, result: str | None, check: S1Check | None, fps: float,
              panel: tuple[str, list[tuple[str, tuple]]] | None = None, mode_line: str | None = None,
              controllers: dict | None = None, history: list[dict] | None = None,
-             guide_text: str | None = None, notice: str | None = None) -> np.ndarray:
+             guide_text: str | None = None, notice: str | None = None,
+             steps: tuple[list, str] | None = None) -> np.ndarray:
         img = Image.fromarray(rgb).convert("RGBA")
         over = Image.new("RGBA", img.size, (0, 0, 0, 0))
         d = ImageDraw.Draw(over)
@@ -197,6 +200,8 @@ class Hud:
             d.text(((W - sw) / 2, 362), sub, font=self.f, fill=(255, 255, 255))
         if history:
             self._draw_history(d, history)
+        if steps:
+            self._draw_steps(d, *steps)
         if panel:
             title, lines = panel
             pw = max([d.textlength(title, font=self.f_title)] + [d.textlength(t, font=self.f) for t, _ in lines]) + 60
@@ -208,6 +213,22 @@ class Hud:
                 d.text((x0 + 30, y0 + 64 + 36 * j), t, font=self.f, fill=col)
         return np.asarray(Image.alpha_composite(img, over).convert("RGB"))
 
+
+    def _draw_steps(self, d: ImageDraw.ImageDraw, banner: list[tuple[str, str]], hint: str) -> None:
+        """Visit mode: where the group is in ① 시범 → ② 공부 → ③ AI 시연 → ④ 다시 공부 → ⑤ 결과."""
+        col = {"done": (130, 200, 150), "current": (255, 225, 120), "todo": (150, 155, 165)}
+        widths = [d.textlength(t, font=self.f_small) for t, _ in banner]
+        total = sum(widths) + 18 * (len(banner) - 1) + 40
+        x, y = (W - total) / 2, H - 160
+        self._box(d, (x, y, x + total, y + 68), alpha=200)
+        cx = x + 20
+        for (t, st), w in zip(banner, widths):
+            if st == "current":
+                d.rounded_rectangle((cx - 6, y + 6, cx + w + 6, y + 32), radius=6, fill=(70, 60, 20, 230))
+            d.text((cx, y + 8), t, font=self.f_small, fill=col[st])
+            cx += w + 18
+        hw = d.textlength(hint, font=self.f_tiny)
+        d.text(((W - hw) / 2, y + 42), hint, font=self.f_tiny, fill=(235, 238, 245))
 
     def _draw_history(self, d: ImageDraw.ImageDraw, history: list[dict]) -> None:
         """Success rate per training round (measured on held-out layouts)."""
@@ -251,6 +272,21 @@ def start_panel(state: str, connected: dict, source: str, ai: bool = False):
     return ("시작 준비" if state == "waiting" else "일시정지: 조이콘 연결 끊김"), lines
 
 
+def result_panel(group: str, history: list[dict], reference: list[dict]):
+    white, dim, good = (240, 242, 248), (200, 205, 215), (120, 230, 140)
+    lines = []
+    for r in history:
+        lines.append((f"{r['label']}: 성공 {r['success_rate'] * 100:.0f}% · 판당 큐브 {r['cubes_mean']:.2f}개 "
+                      f"(처음 보는 배치 {r.get('episodes', '?')}판)", good))
+    if not history:
+        lines.append(("아직 AI가 공부하지 않았어요", dim))
+    if reference:
+        lines.append(("참고 (미리 잰 값)", white))
+        for r in reference:
+            lines.append((f"· {r['label']}: {r['value']}", dim))
+    return f"{group} 결과", lines
+
+
 def train_panel(trainer: LiveTrainer):
     white, dim = (240, 242, 248), (200, 205, 215)
     el = time.perf_counter() - trainer.t_started
@@ -288,6 +324,12 @@ def main() -> None:
     ap.add_argument("--autostart", action="store_true", help="start the first episode without a button (smoke tests)")
     ap.add_argument("--video", type=Path, help="also write what the window shows to this .mp4 (30 fps)")
     ap.add_argument("--eval-episodes", type=int, default=40, help="layouts used to test a retrained AI")
+    ap.add_argument("--visit", metavar="GROUP", help="visit mode for one group (e.g. 1조): demos -> study -> AI -> fix -> study")
+    ap.add_argument("--visit-demos", type=int, default=3, help="visit: successful demos to aim for before studying")
+    ap.add_argument("--visit-base", nargs="*", default=[], help="visit: also learn from these sessions (e.g. s01 t01)")
+    ap.add_argument("--test-autopilot", action="store_true",
+                    help="SMOKE TEST ONLY: a scripted controller plays the people's part and presses the keys, "
+                         "to run the whole visit flow end to end (use a session code starting with _)")
     args = ap.parse_args()
 
     env = AlohaSortEnv(time_limit=args.time_limit)
@@ -323,6 +365,21 @@ def main() -> None:
     trainer = LiveTrainer(episodes=args.eval_episodes) if policy else None
     if trainer:
         trainer.add_baseline(args.policy)
+    flow = VisitFlow(args.visit, args.visit_demos, tuple(args.visit_base)) if args.visit else None
+    autopilot = None
+    if args.test_autopilot:
+        if not (flow and args.visit.startswith("_")):
+            raise SystemExit("--test-autopilot needs --visit with a test session code starting with _")
+        from teachabot.aloha.scripted import ScriptedSorter
+        autopilot = ScriptedSorter()
+    result_shown_at = None
+    reference = load_reference(VISIT_REFERENCE) if flow else []
+    if flow:
+        policy = None                         # every group starts by teaching
+        writer = DemoWriter(args.visit, provider.source)
+        trainer = LiveTrainer(episodes=args.eval_episodes, sessions=flow.sessions(), label_prefix=f"{args.visit} ")
+        for h in HANDS:
+            controllers[h] = "human"
     policy_path = args.policy
     retrains: list[dict] = []
     video = None
@@ -360,6 +417,8 @@ def main() -> None:
         info = env.info()
 
     def mode_line() -> str | None:
+        if flow and policy is None:
+            return f"{flow.group} 시범 기록 중 · 성공 {flow.demos_ok}판"
         if policy is not None:
             n, t = policy.meta.get("n_demos"), policy.meta.get("n_takeovers", 0)
             learned = f"시범 {n}개" + (f" + 개입 {t}번" if t else "")
@@ -373,6 +432,7 @@ def main() -> None:
 
     key_start = bool(args.autostart)
     key_train = False
+    key_next = False
     t_run = time.perf_counter()
     t_prev, acc = t_run, 0.0
     notice, notice_t = None, -1e9
@@ -396,16 +456,46 @@ def main() -> None:
             if pressed["left"].get("capture") or pressed["right"].get("home"):
                 new_episode()
                 continue
-            if trainer and (pressed["right"].get("x") or key_train) and state in ("waiting", "finished"):
-                trainer.start()
-            key_train = False
+            if trainer and (pressed["right"].get("x") or key_train) and state in ("waiting", "finished") \
+                    and not trainer.busy():
+                if flow is None or flow.start_training():
+                    trainer.start()
+            if flow and key_next and state in ("waiting", "finished") and not trainer.busy():
+                if flow.next() == "train":
+                    trainer.start()
+            key_train = key_next = False
+            if flow and trainer.state == "error" and flow.step in ("train", "retrain"):
+                flow.on_trained(False)
             if trainer and trainer.state == "done" and trainer.result and \
                     trainer.result["policy"] != str(policy_path):
                 policy_path = Path(trainer.result["policy"])
                 policy = NumpyPolicy.load(policy_path)          # the next episode uses the new AI
                 retrains.append(trainer.result)
                 print("retrained", trainer.result, flush=True)
+                if flow:
+                    flow.on_trained(True)
+                    if seed < PRACTICE_SEED_BASE:        # AI rounds use unseen practice layouts
+                        seed = PRACTICE_SEED_BASE + 100
+                    new_episode()                        # fresh layout, arms handed to the AI
 
+            if autopilot:                              # test: press the keys a person would press
+                if state == "finished":
+                    if flow.step == "demo" and flow.demos_ok >= flow.target_demos:
+                        key_train = True
+                    elif flow.step == "ai" and flow.takeovers >= 1 and flow.trainings < 2:
+                        key_train = True
+                    elif flow.step == "ai" and flow.trainings >= 2:
+                        key_next = True
+                    elif flow.step != "result":
+                        new_episode()
+                        autopilot.reset()
+                elif state == "waiting" and not trainer.busy():
+                    key_start = True
+                    autopilot.reset()
+                if flow.step == "result":
+                    result_shown_at = result_shown_at or t_start
+                    if t_start - result_shown_at > 3.0:
+                        break
             # Start gate: nothing moves until both hands are connected and A (Space) is pressed.
             connected = {h: frame.hand(h).connected for h in HANDS}
             start = pressed["right"].get("a", False) or key_start
@@ -413,6 +503,8 @@ def main() -> None:
             ready = all(connected.values()) or policy is not None
             if trainer and trainer.busy():
                 start = False                      # no new episode while the AI is studying
+            if flow and flow.step == "result":
+                start = False                      # the result screen stays until the operator closes it
             if state == "waiting" and ready and start:
                 if trainer and trainer.state in ("done", "error"):
                     trainer.state = "idle"             # the result panel has been seen
@@ -434,7 +526,10 @@ def main() -> None:
                 acc -= CONTROL_DT
                 n_steps += 1
                 obs = env.observation()
-                human_cmds = mapper.commands(frame, CONTROL_DT)
+                human_cmds = autopilot.commands(env) if autopilot else mapper.commands(frame, CONTROL_DT)
+                if autopilot and policy is not None and env.t > 2.0 and controllers["right"] == "ai":
+                    controllers["right"] = "human"         # test: take the right arm over after 2 s
+                    takeover_t["right"] = round(env.t, 2)
                 if policy is not None:
                     for h in HANDS:                # takeover: the person grabs this arm for the rest of the episode
                         hand = frame.hand(h)
@@ -469,6 +564,8 @@ def main() -> None:
                                           extra={"takeover_t": dict(takeover_t),
                                                  "policy": str(policy_path) if policy is not None else None})
                     print("demo saved", saved.name if saved else None, flush=True)
+                    if flow and saved:
+                        flow.on_episode_saved("takeover" if policy is not None else "demo", info.success)
                 episodes.append({"episode": episode, "seed": seed, "success": info.success,
                                  "time": round(info.time, 2), "in_tray": {k: bool(v) for k, v in info.in_tray.items()},
                                  "takeover": dict(takeover_t) if policy is not None else None,
@@ -479,16 +576,20 @@ def main() -> None:
             panel = start_panel(state, connected, provider.source, ai=policy is not None)
             if trainer and trainer.state != "idle" and state in ("waiting", "finished"):
                 panel = train_panel(trainer)
+            if flow and flow.step == "result":
+                panel = result_panel(flow.group, trainer.history, reference)
             if t_start - notice_t >= 0.5:            # reads a small status file; twice a second is plenty
                 notice, notice_t = provider.status_line(), t_start
             out = hud.draw(renderer.render(), env, info, frame, mapper, provider.source, episode,
                            None if (panel and trainer and trainer.state != "idle") else result, check, fps,
                            panel=panel, mode_line=mode_line(),
                            controllers=dict(controllers) if policy is not None else None,
-                           history=trainer.history if trainer else None, notice=notice)
+                           history=trainer.history if (trainer and not (flow and flow.step == "result")) else None,
+                           notice=notice,
+                           steps=(flow.banner(), flow.hint()) if flow else None)
             # record only while something happens (not the idle start screen), so a window left
             # open does not fill the disk; the video simply skips the waiting time
-            recording = state != "waiting" or (trainer is not None and trainer.state != "idle")
+            recording = state != "waiting" or (trainer is not None and trainer.state != "idle")                 or (flow is not None and flow.step == "result")
             if video is not None and not recording:
                 next_video_t = time.perf_counter() - t_run
             if video is not None and recording:
@@ -506,6 +607,8 @@ def main() -> None:
                 key_start = True
             if key in (ord("t"), ord("T")):
                 key_train = True
+            if key in (ord("n"), ord("N")):
+                key_next = True
             spent = time.perf_counter() - t_start
             if spent < CONTROL_DT:
                 time.sleep(CONTROL_DT - spent)
@@ -529,8 +632,9 @@ def main() -> None:
                    "input_log": recorder.path.name, "record_session": args.record,
                    "demos_saved": writer.saved if writer else None,
                    "policy": str(args.policy) if args.policy else None,
-                   "retrains": retrains, "video": str(args.video) if args.video else None}
-        path = LOG_DIR / f"aloha_s1_{'check' if check else 'run'}_{stamp}.json"
+                   "retrains": retrains, "video": str(args.video) if args.video else None,
+                   "visit": flow.summary() if flow else None}
+        path = LOG_DIR / f"aloha_s1_{'check' if check else ('visit' if flow else 'run')}_{stamp}.json"
         path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
         print("summary", path)
         print(json.dumps(summary, ensure_ascii=False, indent=2))

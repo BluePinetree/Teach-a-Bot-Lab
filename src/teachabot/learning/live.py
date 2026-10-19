@@ -25,8 +25,10 @@ POLICY_DIR = ROOT / "data" / "policies"
 
 class LiveTrainer:
     def __init__(self, demo_dir: Path = DEMO_DIR, episodes: int = 40, workers: int = 10,
-                 cfg: HandBCConfig | None = None):
+                 cfg: HandBCConfig | None = None, sessions: list[str] | None = None, label_prefix: str = ""):
+        """`sessions`: only these session codes are learned from (visit mode: base + group)."""
         self.demo_dir, self.episodes, self.workers = demo_dir, episodes, workers
+        self.sessions, self.label_prefix = sessions, label_prefix
         self.cfg = cfg or HandBCConfig()
         self.state = "idle"            # idle | training | evaluating | done | error
         self.message = ""
@@ -45,7 +47,7 @@ class LiveTrainer:
                                  "policy": str(policy_path)})
 
     def data_counts(self) -> tuple[int, int]:
-        demos = load_demos(self.demo_dir, kinds=("demo", "takeover"))
+        demos = load_demos(self.demo_dir, kinds=("demo", "takeover"), sessions=self.sessions)
         return sum(d.kind == "demo" for d in demos), sum(d.kind == "takeover" for d in demos)
 
     def busy(self) -> bool:
@@ -62,7 +64,9 @@ class LiveTrainer:
 
     def _run(self) -> None:
         try:
-            demos = load_demos(self.demo_dir, kinds=("demo", "takeover"))
+            demos = load_demos(self.demo_dir, kinds=("demo", "takeover"), sessions=self.sessions)
+            if not demos:
+                raise ValueError("배울 시범이 없습니다 (성공한 판이 필요해요)")
             n_demo = sum(d.kind == "demo" for d in demos)
             n_take = sum(d.kind == "takeover" for d in demos)
             self.message = f"시범 {n_demo}개 + 개입 {n_take}번으로 학습 중"
@@ -73,7 +77,7 @@ class LiveTrainer:
             self.state = "evaluating"
             self.message = f"처음 보는 배치 {self.episodes}판으로 시험 중"
             res = evaluate_policy(path, episodes=self.episodes, workers=self.workers)
-            row = {"label": f"시범 {n_demo}" + (f" + 개입 {n_take}" if n_take else ""), **res.summary(),
+            row = {"label": self.label_prefix + f"시범 {n_demo}" + (f" + 개입 {n_take}" if n_take else ""), **res.summary(),
                    "policy": str(path), "n_demos": n_demo, "n_takeovers": n_take,
                    "train_s": pol.meta["train_s"], "total_s": round(time.perf_counter() - self.t_started, 1)}
             path.with_suffix(".json").write_text(json.dumps({**row, "eval_episodes": res.episodes, "bc": pol.meta},
