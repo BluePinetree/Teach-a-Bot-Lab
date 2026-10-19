@@ -1,0 +1,93 @@
+import numpy as np
+import pytest
+
+from teachabot.aloha.env import OBS_DIM, AlohaSortEnv, ArmCommand
+from teachabot.aloha.gym_env import AlohaSortGymEnv, action_to_commands, commands_to_action, dense_hand_reward
+from teachabot.aloha.scene import CUBE_HALF, HANDS, S1_LAYOUT
+from teachabot.learning.bc import BCConfig, NumpyPolicy, train_bc
+from teachabot.learning.demos import DemoWriter, load_demos, trim_idle_start
+from teachabot.learning.evaluate import evaluate_policy
+
+from aloha_scripted_demos import record_scripted
+
+
+def test_action_mapping_round_trip():
+    cmds = {"left": ArmCommand(move=(0.5, -1.0), vz=-1.0, pitch=0.2, twist=-0.4, grip=True),
+            "right": ArmCommand(move=(0.0, 0.3), vz=1.0, pitch=0.0, twist=0.0, grip=False)}
+    back = action_to_commands(commands_to_action(cmds))
+    for h in HANDS:
+        assert back[h].grip == cmds[h].grip
+        np.testing.assert_allclose([*back[h].move, back[h].vz, back[h].pitch, back[h].twist],
+                                   [*cmds[h].move, cmds[h].vz, cmds[h].pitch, cmds[h].twist], atol=1e-9)
+
+
+def _put_cube_in_tray(env: AlohaSortEnv, h: str):
+    a = env._cube_qadr[h]
+    env.data.qpos[a:a + 3] = (*S1_LAYOUT.tray_pos[h], CUBE_HALF + 0.005)
+
+
+def test_sparse_reward_credits_each_cube_once():
+    g = AlohaSortGymEnv("sparse")
+    g.reset(seed=0)
+    _put_cube_in_tray(g.sim, "left")
+    rewards = [g.step(np.zeros(12, np.float32))[1] for _ in range(5)]
+    assert rewards[0] == 1.0 and sum(rewards) == 1.0
+
+
+def test_dense_reward_is_highest_in_tray():
+    g = AlohaSortGymEnv("dense")
+    g.reset(seed=0)
+    r0 = dense_hand_reward(g.sim, "left")
+    _put_cube_in_tray(g.sim, "left")
+    g.step(np.zeros(12, np.float32))
+    assert dense_hand_reward(g.sim, "left") == 3.5 > r0
+
+
+def test_demo_writer_round_trip_and_filters(tmp_path):
+    w = DemoWriter("s99", "test", tmp_path)
+    for success in (True, False):
+        w.start()
+        for t in range(5):
+            w.add(np.full(OBS_DIM, t, np.float32), np.zeros(12, np.float32))
+        w.finish(7, success, 0.1)
+    assert w.saved == 2 and w.saved_success == 1
+    ok = load_demos(tmp_path)
+    assert len(ok) == 1 and ok[0].obs.shape == (5, OBS_DIM) and ok[0].meta["session"] == "s99"
+    assert len(load_demos(tmp_path, only_success=False)) == 2
+    assert load_demos(tmp_path, sessions=["other"]) == []
+
+
+def test_trim_idle_start(tmp_path):
+    w = DemoWriter("s1", "test", tmp_path)
+    w.start()
+    idle = commands_to_action({h: ArmCommand(vz=1.0) for h in HANDS})     # released buttons, stick centred
+    act = commands_to_action({"left": ArmCommand(move=(1.0, 0.0), vz=1.0), "right": ArmCommand(vz=1.0)})
+    for t in range(10):
+        w.add(np.full(OBS_DIM, t, np.float32), idle if t < 4 else act)
+    w.finish(0, True, 0.2)
+    obs, a = trim_idle_start(load_demos(tmp_path)[0])
+    assert len(obs) == 6 and obs[0, 0] == 4
+
+
+@pytest.fixture(scope="module")
+def scripted_demos(tmp_path_factory):
+    out = tmp_path_factory.mktemp("demos")
+    record_scripted(AlohaSortEnv(), range(200, 203), out)
+    return load_demos(out)
+
+
+def test_bc_trains_and_numpy_policy_round_trips(scripted_demos, tmp_path):
+    pol = train_bc(scripted_demos, BCConfig(iters=200))
+    obs = scripted_demos[0].obs[0]
+    a = pol(obs)
+    assert a.shape == (12,) and set(np.unique(a[[5, 11]])) <= {-1.0, 1.0} and np.all(np.abs(a) <= 1.0)
+    pol.save(tmp_path / "p.npz")
+    np.testing.assert_allclose(NumpyPolicy.load(tmp_path / "p.npz")(obs), a)
+    assert pol.meta["n_demos"] == len(scripted_demos)
+
+
+def test_evaluate_policy_runs_in_parallel(scripted_demos, tmp_path):
+    train_bc(scripted_demos, BCConfig(iters=100)).save(tmp_path / "p.npz")
+    res = evaluate_policy(tmp_path / "p.npz", episodes=2, workers=2, time_limit=2.0)
+    assert len(res.episodes) == 2 and {e["layout_seed"] for e in res.episodes} == {1_000_000, 1_000_001}
+    assert 0.0 <= res.success_rate <= 1.0

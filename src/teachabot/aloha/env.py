@@ -32,7 +32,8 @@ GRIP_OPEN, GRIP_CLOSED = 0.037, 0.002
 WORKSPACE = {"left": ((-0.40, -0.10), (-0.24, 0.32)), "right": ((0.10, 0.40), (-0.24, 0.32))}
 HOME_XY = {"left": (-0.22, -0.06), "right": (0.22, -0.06)}
 NEUTRAL_Q = (0.0, -0.96, 1.16, 0.0, -0.3, 0.0)
-OBS_DIM = 30
+OBS_DIM = 40
+OBS_VERSION = 2                   # v2 adds relative vectors (cube - target, tray - cube) per hand
 ACT_DIM_PER_HAND = 6              # vx, vy, vz, pitch, twist, grip
 
 
@@ -245,6 +246,9 @@ class AlohaSortEnv:
         for h in HANDS:
             yaw = self.cube_yaw(h)
             parts += [self.cube_pos(h), [np.sin(4 * yaw), np.cos(4 * yaw)]]  # cube looks the same every 90°
+        for h in HANDS:   # relative vectors: easy for a small network to act on with little data
+            cube = self.cube_pos(h)
+            parts += [cube - self.targets[h].pos, np.asarray(self.layout.tray_pos[h]) - cube[:2]]
         obs = np.concatenate([np.asarray(p, float).ravel() for p in parts])
         assert obs.shape == (OBS_DIM,)
         return obs

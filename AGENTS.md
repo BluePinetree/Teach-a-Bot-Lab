@@ -31,6 +31,13 @@ Python 3.12 (`.venv`, uv), joycon-python 0.2.4 + hidapi 0.15.0, numpy, pytest. *
 .venv\Scripts\python.exe -m teachabot.aloha_app [--check] [--input keyboard] [--move stick|tilt|point] [--wrist imu|off]
 .venv\Scripts\python.exe -m teachabot.aloha_app --screenshot assets\_check\x.png   # 창 없이 화면 저장
 ```
+```powershell
+.venv\Scripts\python.exe -m teachabot.aloha_app --record s01             # 시범 기록 (익명 세션 코드)
+.venv\Scripts\python.exe scripts\train_bc.py [--limit k | --curve 1 2 3 5 10]   # 모방학습 + 자동 평가(처음 보는 배치 20판)
+.venv\Scripts\python.exe -m teachabot.aloha_app --policy data\policies\X.npz   # AI가 조종
+.venv\Scripts\python.exe scripts\train_rl.py --reward sparse|dense       # 강화학습 기준선 (Ctrl-C로 중단해도 저장)
+```
+학습 데이터·정책·강화학습 결과는 `data/demos`, `data/policies`, `data/rl_runs` (git 미추적). 강화학습 실행 중에도 앱 프레임은 ~25ms로 문제없음.
 ALOHA 앱은 두 조이콘이 연결되고 오른쪽 A(키보드 Space)를 눌러야 시작한다. Esc 또는 Ctrl-C로 끝내면 요약 JSON이 `data/logs`에 저장된다.
 수동 테스트는 화면에 체크리스트가 뜨므로, 사용자에게 보이는 창(터미널 패널 등)에서 실행해야 한다.
 3D 앱 화면을 직접 확인할 때는 `--screenshot PATH`(창을 맨 앞에 띄워 2초 뒤 캡처 후 종료)를 쓴다. Panda 버퍼 캡처는 검게 나온다.

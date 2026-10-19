@@ -21,11 +21,14 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from teachabot.aloha.env import CONTROL_DT, AlohaSortEnv, ArmCommand
+from teachabot.aloha.gym_env import action_to_commands, commands_to_action
 from teachabot.aloha.scene import CUBE_HALF, HANDS
 from teachabot.aloha.teleop import MOVE_SOURCES, TeleopMapper, TeleopSettings
 from teachabot.input.base import InputFrame, InputProvider
 from teachabot.input.motion import MotionCalibration
 from teachabot.input.replay import InputRecorder
+from teachabot.learning.bc import NumpyPolicy
+from teachabot.learning.demos import DemoWriter
 
 ROOT = Path(__file__).resolve().parents[2]
 FONT_PATH = Path("C:/Windows/Fonts/malgun.ttf")
@@ -99,7 +102,7 @@ class Hud:
 
     def draw(self, rgb: np.ndarray, env: AlohaSortEnv, info, frame: InputFrame | None, mapper: TeleopMapper,
              source: str, episode: int, result: str | None, check: S1Check | None, fps: float,
-             panel: tuple[str, list[tuple[str, tuple]]] | None = None) -> np.ndarray:
+             panel: tuple[str, list[tuple[str, tuple]]] | None = None, mode_line: str | None = None) -> np.ndarray:
         img = Image.fromarray(rgb).convert("RGBA")
         over = Image.new("RGBA", img.size, (0, 0, 0, 0))
         d = ImageDraw.Draw(over)
@@ -107,6 +110,10 @@ class Hud:
         d.text((32, 20), "S1 정리하기", font=self.f_title, fill=(255, 255, 255))
         d.text((32, 62), "파란 큐브 → 파란 상자 (왼손),  주황 큐브 → 주황 상자 (오른손)", font=self.f_small,
                fill=(220, 225, 235))
+        if mode_line:
+            mw = d.textlength(mode_line, font=self.f) + 28
+            self._box(d, (W - 16 - mw, 106, W - 16, 142))
+            d.text((W - 2 - mw, 110), mode_line, font=self.f, fill=(255, 225, 120))
         self._box(d, (W - 330, 14, W - 16, 98))
         d.text((W - 314, 20), f"{info.time:5.1f} 초", font=self.f_title, fill=(255, 255, 255))
         d.text((W - 314, 62), f"{episode}번째 판 · 입력 {source} · {fps:4.0f}fps", font=self.f_small,
@@ -167,9 +174,11 @@ class Hud:
         return np.asarray(Image.alpha_composite(img, over).convert("RGB"))
 
 
-def start_panel(state: str, connected: dict, source: str):
+def start_panel(state: str, connected: dict, source: str, ai: bool = False):
     if state not in ("waiting", "paused"):
         return None
+    if ai:
+        return "AI 차례", [("A 버튼(또는 스페이스바)을 누르면 AI가 혼자 해 봅니다", (240, 242, 248))]
     ok, bad, white = (120, 230, 140), (255, 130, 110), (240, 242, 248)
     lines = []
     if source != "keyboard":
@@ -197,6 +206,9 @@ def main() -> None:
     ap.add_argument("--check", action="store_true", help="noon checkpoint checklist")
     ap.add_argument("--screenshot", type=Path, help="render a few seconds with no input, save, exit")
     ap.add_argument("--max-seconds", type=float, help="quit after this long (smoke tests)")
+    ap.add_argument("--record", metavar="SESSION", help="save each episode as a demonstration (anonymous code, e.g. s01)")
+    ap.add_argument("--policy", type=Path, help="let a trained policy (.npz) drive instead of the Joy-Cons")
+    ap.add_argument("--autostart", action="store_true", help="start the first episode without a button (smoke tests)")
     args = ap.parse_args()
 
     env = AlohaSortEnv()
@@ -220,8 +232,10 @@ def main() -> None:
         print("saved", args.screenshot)
         return
 
+    policy = NumpyPolicy.load(args.policy) if args.policy else None
     provider = make_provider(args.input)
     provider.connect()
+    writer = DemoWriter(args.record, provider.source) if args.record and not policy else None
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     recorder = InputRecorder(LOG_DIR / f"aloha_s1_input_{stamp}.jsonl", provider.source,
@@ -238,6 +252,8 @@ def main() -> None:
 
     def new_episode():
         nonlocal seed, episode, result, info, acc, state
+        if writer:
+            writer.start()          # an unfinished episode is discarded
         acc = 0.0
         state = "waiting"
         seed += 1
@@ -246,6 +262,15 @@ def main() -> None:
         env.reset(seed)
         info = env.info()
 
+    def mode_line() -> str | None:
+        if policy is not None:
+            n = policy.meta.get("n_demos")
+            return f"AI가 조종 중 (시범 {n}개로 배움)" if n else "AI가 조종 중"
+        if writer:
+            return f"시범 기록 중 · 저장 {writer.saved}개 (성공 {writer.saved_success}개)"
+        return None
+
+    key_start = bool(args.autostart)
     t_run = time.perf_counter()
     t_prev, acc = t_run, 0.0
     try:
@@ -271,14 +296,18 @@ def main() -> None:
 
             # Start gate: nothing moves until both hands are connected and A (Space) is pressed.
             connected = {h: frame.hand(h).connected for h in HANDS}
-            start = pressed["right"].get("a", False)
-            if state == "waiting" and all(connected.values()) and start:
+            start = pressed["right"].get("a", False) or key_start
+            key_start = False
+            ready = all(connected.values()) or policy is not None
+            if state == "waiting" and ready and start:
                 for h in HANDS:                    # the grip held at start becomes the wrist neutral
                     mapper.recenter(h, frame.hand(h).accel)
+                if writer:
+                    writer.start()
                 state, acc = "running", 0.0
-            elif state == "running" and not all(connected.values()):
+            elif state == "running" and not ready:
                 state = "paused"
-            elif state == "paused" and all(connected.values()) and start:
+            elif state == "paused" and ready and start:
                 state, acc = "running", 0.0
 
             # Advance physics by real elapsed time (rendering runs ~35-45 fps; control is 50 Hz).
@@ -288,7 +317,11 @@ def main() -> None:
             while result is None and acc >= CONTROL_DT:
                 acc -= CONTROL_DT
                 n_steps += 1
-                _, info = env.step(mapper.commands(frame, CONTROL_DT))
+                obs = env.observation()
+                cmds = action_to_commands(policy(obs)) if policy else mapper.commands(frame, CONTROL_DT)
+                if writer:
+                    writer.add(obs, commands_to_action(cmds))
+                _, info = env.step(cmds)
                 if check:
                     check.update(env, info)
                 if info.done:
@@ -300,19 +333,25 @@ def main() -> None:
                     fell = any(env.cube_pos(h)[2] < -0.05 for h in HANDS)
                     result = "실패: 큐브가 떨어졌어요" if fell else "실패: 시간 초과"
                 state = "finished"
+                if writer:
+                    saved = writer.finish(seed, info.success, info.time)
+                    print("demo saved", saved.name if saved else None, flush=True)
                 episodes.append({"episode": episode, "seed": seed, "success": info.success,
                                  "time": round(info.time, 2), "in_tray": {k: bool(v) for k, v in info.in_tray.items()}})
                 print("episode", episodes[-1], flush=True)
 
             renderer.update_scene(env.data, camera="demo_cam")
             out = hud.draw(renderer.render(), env, info, frame, mapper, provider.source, episode, result, check, fps,
-                           panel=start_panel(state, connected, provider.source))
+                           panel=start_panel(state, connected, provider.source, ai=policy is not None),
+                           mode_line=mode_line())
             cv2.imshow(WINDOW, cv2.cvtColor(out, cv2.COLOR_RGB2BGR))
             key = cv2.waitKey(1) & 0xFF
             if key == 27 or cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
                 break
             if key in (ord("r"), ord("R")):
                 new_episode()
+            if key == 32:
+                key_start = True
             spent = time.perf_counter() - t_start
             if spent < CONTROL_DT:
                 time.sleep(CONTROL_DT - spent)
@@ -331,7 +370,9 @@ def main() -> None:
                    "frame_ms_p99": float(np.percentile(frame_ms, 99)) if frame_ms else None,
                    "check": {k: check.done.get(k) for k, _ in S1Check.STEPS} if check else None,
                    "check_complete": check.complete if check else None,
-                   "input_log": recorder.path.name}
+                   "input_log": recorder.path.name, "record_session": args.record,
+                   "demos_saved": writer.saved if writer else None,
+                   "policy": str(args.policy) if args.policy else None}
         path = LOG_DIR / f"aloha_s1_{'check' if check else 'run'}_{stamp}.json"
         path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
         print("summary", path)
