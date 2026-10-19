@@ -4,6 +4,7 @@ r"""Figures for the blog/slides from the real logs (re-run any time; numbers com
 
 fig13_bc_vs_demos.png      success rate and cubes per episode vs number of human demonstrations
 fig14_rl_progress.png      RL baseline: held-out success / training cubes / return vs practice hours
+fig16_takeover_effect.png  demos only vs demos + takeover corrections (scripts/compare_datasets.py CSV)
 """
 from __future__ import annotations
 
@@ -82,6 +83,35 @@ def fig_rl() -> Path:
     return out
 
 
+def fig_takeover(compare: Path) -> Path:
+    rows = read_csv(compare)
+    names = list(dict.fromkeys(r["dataset"] for r in rows))
+    label = {"demos": "시범만", "demos+takeover": "시범 + 개입"}
+    fig, ax = plt.subplots(1, 2, figsize=(10, 4))
+    for i, (key, title, scale) in enumerate((("success_rate", "두 큐브 모두 성공한 비율 (%)", 100),
+                                             ("cubes_mean", "한 판에 상자에 넣은 큐브 (2개 중)", 1))):
+        for j, n in enumerate(names):
+            v = [scale * float(r[key]) for r in rows if r["dataset"] == n]
+            m = sum(v) / len(v)
+            ax[i].bar(j, m, color=("#4c9be8", "#2e8b57")[j % 2], alpha=0.85)
+            ax[i].scatter([j] * len(v), v, color="black", zorder=3, s=14)
+            ax[i].text(j, m / 2, (f"평균 {m:.1f}%" if scale == 100 else f"평균 {m:.2f}"), ha="center",
+                       color="white", fontsize=12, fontweight="bold")
+        ticks = []
+        for n in names:
+            r = next(x for x in rows if x["dataset"] == n)
+            data = f"시범 {r['n_demos']}" + (f" + 개입 {r['n_takeovers']}" if int(r["n_takeovers"]) else "")
+            ticks.append(f"{label.get(n, n)}\n({data})")
+        ax[i].set_xticks(range(len(names)), ticks)
+        ax[i].set_title(title)
+    eps, seeds = rows[0]["episodes"], len([r for r in rows if r["dataset"] == names[0]])
+    fig.suptitle(f"넘겨받기(개입 수정)의 효과: 처음 보는 배치 {eps}판, 학습 seed {seeds}개 (점 = seed별)")
+    fig.tight_layout()
+    out = OUT / "fig16_takeover_effect.png"
+    fig.savefig(out, dpi=150)
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--curve", type=Path, help="bc_curve_*.csv (default: newest with 40 episodes)")
@@ -95,6 +125,9 @@ def main() -> None:
         curve = curves[-1]
     print(fig_bc(curve), "from", curve.name)
     print(fig_rl())
+    compares = sorted(glob.glob(str(ROOT / "data" / "policies" / "compare_*.csv")))
+    if compares:
+        print(fig_takeover(Path(compares[-1])), "from", Path(compares[-1]).name)
 
 
 if __name__ == "__main__":
