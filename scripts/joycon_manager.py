@@ -4,6 +4,9 @@
     .venv\\Scripts\\python.exe scripts\\joycon_manager.py --cli      # text only (one line per second)
     .venv\\Scripts\\python.exe scripts\\joycon_manager.py --no-auto-repair
 
+Double-click launcher: JoyCon_Manager.bat in the project root (runs this with
+pythonw, no console). Only one manager runs at a time.
+
 Start it before the app and leave it running. Per Joy-Con it shows what to do
 next: press SYNC (pair / re-pair), press any button (asleep, or 15-minute sleep
 coming up), or nothing (ready). A stuck Joy-Con is re-paired automatically
@@ -15,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import ctypes
 import sys
 import threading
 import time
@@ -25,7 +29,24 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from teachabot.btlink.manager import SIDES, LinkManager  # noqa: E402
+SIDES = ("L", "R")
+APP_TITLE = "조이콘 연결 관리자"
+_MUTEX_NAME = "Local\\TeachABot_JoyConLinkManager"
+_mutex_handle = None      # kept for the life of the process
+
+
+def message_box(text: str) -> None:
+    """Visible even under pythonw (no console)."""
+    ctypes.windll.user32.MessageBoxW(None, text, APP_TITLE, 0x40)
+
+
+def acquire_single_instance() -> bool:
+    """Two managers would both re-pair the same Joy-Con; allow only one."""
+    global _mutex_handle
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    _mutex_handle = kernel32.CreateMutexW(None, False, _MUTEX_NAME)
+    return kernel32.GetLastError() != 183      # ERROR_ALREADY_EXISTS
 
 COLORS = {"ready": "#2e9e4f", "warn": "#d9a400", "waking": "#3b7dd8", "asleep": "#8a8f98",
           "stuck": "#d9622b", "repairing": "#d9622b", "unpaired": "#c0392b", "unknown": "#8a8f98"}
@@ -46,7 +67,8 @@ class Logger:
         self.f.write(line + "\n")
         self.f.flush()
         self.lines = (self.lines + [line])[-4:]
-        print(line, flush=True)
+        if sys.stdout is not None:            # None under pythonw (double-click launcher)
+            print(line, flush=True)
 
 
 class Runner:
@@ -100,7 +122,7 @@ def run_window(runner: Runner, log: Logger) -> None:
     import tkinter as tk
 
     root = tk.Tk()
-    root.title("조이콘 연결 관리자")
+    root.title(APP_TITLE)
     root.attributes("-topmost", True)
     root.configure(bg="#1b1f27")
     root.resizable(False, False)
@@ -148,12 +170,22 @@ def run_window(runner: Runner, log: Logger) -> None:
 
 
 def main() -> None:
-    sys.stdout.reconfigure(encoding="utf-8")
+    if sys.stdout is not None:
+        sys.stdout.reconfigure(encoding="utf-8")
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--cli", action="store_true", help="no window, print status once a second")
     p.add_argument("--no-auto-repair", action="store_true", help="re-pair only when the button is clicked")
     args = p.parse_args()
+    if not acquire_single_instance():
+        message_box("조이콘 연결 관리자가 이미 실행 중입니다.\n작업 표시줄이나 다른 창 뒤를 확인해 주세요.")
+        return
     log = Logger()
+    try:
+        from teachabot.btlink.manager import LinkManager
+    except ImportError as e:       # e.g. a new PC where the setup step was skipped
+        log(f"필요한 패키지를 불러오지 못함: {e}")
+        message_box(f"필요한 패키지를 불러오지 못했습니다.\n{e}\n\nREADME의 '준비' 단계를 먼저 실행해 주세요.")
+        return
     manager = LinkManager(auto_repair=not args.no_auto_repair, log=log)
     log(f"시작 · MAC {manager.macs or '(아직 없음: 처음 페어링)'} · 자동 재페어링 {'켬' if manager.auto_repair else '끔'}")
     runner = Runner(manager, log)
