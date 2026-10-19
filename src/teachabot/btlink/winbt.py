@@ -41,8 +41,17 @@ def mac_to_int(mac: str) -> int:
 
 
 def load_macs(path: Path = CONFIG_PATH) -> dict[str, str]:
-    """{"L": "70:2C:...", "R": ...} from config/joycon_link.json."""
-    return json.loads(path.read_text(encoding="utf-8"))["joycons"]
+    """{"L": "70:2C:...", "R": ...} from config/joycon_link.json ({} if not set up yet)."""
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8")).get("joycons", {})
+
+
+def save_mac(side: str, mac: str, path: Path = CONFIG_PATH) -> None:
+    """Remember the address of a newly paired Joy-Con (only that one is accepted later)."""
+    cfg = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    cfg.setdefault("joycons", {})[side] = mac
+    path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
 
 
 @dataclass(frozen=True)
@@ -83,6 +92,13 @@ class BtLink:
             connected=dev.connection_status == BluetoothConnectionStatus.CONNECTED,
             name=dev.name,
         )
+
+    async def refresh_paired(self) -> bool:
+        """Current pairing state (the device object's own copy is a snapshot)."""
+        if self._device is None:
+            return False
+        info = await DeviceInformation.create_from_id_async(self._device.device_id)
+        return bool(info.pairing.is_paired)
 
     def close(self) -> None:
         if self._device is not None:

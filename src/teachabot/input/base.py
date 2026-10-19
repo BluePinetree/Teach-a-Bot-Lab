@@ -150,6 +150,10 @@ class InputProvider(ABC):
     @abstractmethod
     def disconnect(self) -> None: ...
 
+    def status_line(self) -> str | None:
+        """Optional one-line notice for the game HUD (e.g. a controller about to sleep)."""
+        return None
+
     def __enter__(self):
         self.connect()
         return self

@@ -117,7 +117,7 @@ class Hud:
              source: str, episode: int, result: str | None, check: S1Check | None, fps: float,
              panel: tuple[str, list[tuple[str, tuple]]] | None = None, mode_line: str | None = None,
              controllers: dict | None = None, history: list[dict] | None = None,
-             guide_text: str | None = None) -> np.ndarray:
+             guide_text: str | None = None, notice: str | None = None) -> np.ndarray:
         img = Image.fromarray(rgb).convert("RGBA")
         over = Image.new("RGBA", img.size, (0, 0, 0, 0))
         d = ImageDraw.Draw(over)
@@ -160,6 +160,11 @@ class Hud:
                 wrist = "손목  고정 (기울기 보정 없음)"
             d.text((x0 + 14, y0 + 38), wrist, font=self.f_small, fill=(220, 225, 235))
             d.text((x0 + 14, y0 + 62), f"높이 {tg.pos[2] * 100:4.1f} cm", font=self.f_small, fill=(220, 225, 235))
+
+        if notice:    # controller notice from the input provider (Joy-Con about to sleep / re-pair)
+            nw = d.textlength(notice, font=self.f) + 40
+            self._box(d, ((W - nw) / 2, y0 - 50, (W + nw) / 2, y0 - 10), alpha=210)
+            d.text(((W - nw) / 2 + 20, y0 - 45), notice, font=self.f, fill=(255, 200, 90))
 
         self._box(d, (16, H - 62, W - 16, H - 16))
         guide = ("스틱: 이동  ·  L/R 누르고 있기: 내리기  ·  ZL/ZR 누르고 있기: 집기  ·  조이콘 기울이기: 손목"
@@ -369,6 +374,7 @@ def main() -> None:
     key_train = False
     t_run = time.perf_counter()
     t_prev, acc = t_run, 0.0
+    notice, notice_t = None, -1e9
     try:
         while True:
             t_start = time.perf_counter()
@@ -472,11 +478,13 @@ def main() -> None:
             panel = start_panel(state, connected, provider.source, ai=policy is not None)
             if trainer and trainer.state != "idle" and state in ("waiting", "finished"):
                 panel = train_panel(trainer)
+            if t_start - notice_t >= 0.5:            # reads a small status file; twice a second is plenty
+                notice, notice_t = provider.status_line(), t_start
             out = hud.draw(renderer.render(), env, info, frame, mapper, provider.source, episode,
                            None if (panel and trainer and trainer.state != "idle") else result, check, fps,
                            panel=panel, mode_line=mode_line(),
                            controllers=dict(controllers) if policy is not None else None,
-                           history=trainer.history if trainer else None)
+                           history=trainer.history if trainer else None, notice=notice)
             # record only while something happens (not the idle start screen), so a window left
             # open does not fill the disk; the video simply skips the waiting time
             recording = state != "waiting" or (trainer is not None and trainer.state != "idle")

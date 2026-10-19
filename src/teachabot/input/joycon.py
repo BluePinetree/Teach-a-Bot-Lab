@@ -8,9 +8,12 @@ often the game polls.
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 from pathlib import Path
+
+from teachabot.btlink import status as link_status
 
 from .base import BUTTONS, HANDS, HandInput, InputFrame, InputProvider
 from .joycon_device import JoyConDevice, JoyConSample
@@ -61,8 +64,15 @@ class JoyConInputProvider(InputProvider):
 
     def __init__(self, deadzone: float = 0.12, debounce_s: float = 0.012,
                  reconnect_interval_s: float = 2.0, first_report_timeout_s: float = 3.0,
-                 axis_map_path: Path = DEFAULT_AXIS_MAP_PATH):
+                 axis_map_path: Path = DEFAULT_AXIS_MAP_PATH,
+                 status_path: Path | None = link_status.APP_STATUS_PATH):
+        """status_path: where to publish per-hand link status for the link manager
+        (scripts/joycon_manager.py) once a second; None disables it."""
         self.deadzone = deadzone
+        self.status_path = status_path
+        # wall time of the last report with any button down, per hand (Joy-Con sleep timer)
+        self._last_button_wall: dict[str, float | None] = {h: None for h in HANDS}
+        self._connected_since_wall: dict[str, float | None] = {h: None for h in HANDS}
         self.reconnect_interval_s = reconnect_interval_s
         self.first_report_timeout_s = first_report_timeout_s
         self.axis_map_path = axis_map_path
@@ -105,6 +115,30 @@ class JoyConInputProvider(InputProvider):
     def set_right_axis_map(self, axis_map: AxisMap) -> None:
         self.right_axis_map = axis_map
 
+    def link_status(self) -> dict:
+        """Per-side status for the link manager (see teachabot.btlink.status)."""
+        return {"updated_wall": time.time(), "pid": os.getpid(),
+                "hands": {_SIDE[h]: {"connected": self._devices[h].connected,
+                                     "connected_since_wall": self._connected_since_wall[h],
+                                     "last_button_wall": self._last_button_wall[h]}
+                          for h in HANDS}}
+
+    def status_line(self) -> str | None:
+        """Sleep warning / repair instruction from the link manager, or this
+        process's own estimate when the manager is not running."""
+        link = link_status.read_fresh(link_status.LINK_STATUS_PATH)
+        if link is not None:
+            return link_status.warning_line(link)
+        now = time.time()
+        sides = {}
+        for h in HANDS:
+            if not self._devices[h].connected:
+                continue
+            last = self._last_button_wall[h]      # connecting is not proof of a press (app restart)
+            sides[_SIDE[h]] = {"state": "ready", "warn": last is None,
+                               "remaining_s": None if last is None else link_status.sleep_remaining_s(last, now)}
+        return link_status.warning_line({"sides": sides})
+
     def calibration_status(self) -> dict:
         return {h: {"stick_center": s.calibrator.center,
                     "stick_half_range": [round(v) for v in s.calibrator.half_range],
@@ -130,6 +164,8 @@ class JoyConInputProvider(InputProvider):
             st.calibrator.feed(s.stick_raw)
             for dev_name, canon in _BUTTON_MAP[hand].items():
                 st.debouncers[canon].update(bool(s.buttons[dev_name]), s.t)
+            if any(s.buttons.values()):
+                self._last_button_wall[hand] = s.wall
             for sub in s.gyro_dps:
                 st.gyro_bias.update(sub)
             st.last_sample = s
@@ -153,16 +189,25 @@ class JoyConInputProvider(InputProvider):
         last_attempt = {h: -1e9 for h in HANDS}
         opened_at: dict[str, float | None] = {h: None for h in HANDS}
         was_connected = {h: False for h in HANDS}
+        last_status = -1e9
         while not self._stop.is_set():
             now = time.perf_counter()
+            if self.status_path is not None and now - last_status >= 1.0:
+                last_status = now
+                try:
+                    link_status.write_json(self.status_path, self.link_status())
+                except OSError:
+                    pass                  # status is advisory; never break input for it
             for hand, dev in self._devices.items():
                 if dev.connected:
                     if not was_connected[hand]:
                         was_connected[hand] = True
+                        self._connected_since_wall[hand] = time.time()
                         self._event("connected", hand)
                     continue
                 if was_connected[hand]:
                     was_connected[hand], opened_at[hand] = False, None
+                    self._connected_since_wall[hand] = None
                     dev.mark_disconnected()
                     self._event("disconnected", hand)
                 if opened_at[hand] is not None and dev.awaiting_first_report():

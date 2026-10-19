@@ -43,7 +43,8 @@ Python 3.12 (`.venv`, uv), joycon-python 0.2.4 + hidapi 0.15.0, numpy, pytest. *
 ALOHA 앱은 두 조이콘이 연결되고 오른쪽 A(키보드 Space)를 눌러야 시작한다. Esc 또는 Ctrl-C로 끝내면 요약 JSON이 `data/logs`에 저장된다.
 수동 테스트는 화면에 체크리스트가 뜨므로, 사용자에게 보이는 창(터미널 패널 등)에서 실행해야 한다.
 3D 앱 화면을 직접 확인할 때는 `--screenshot PATH`(창을 맨 앞에 띄워 2초 뒤 캡처 후 종료)를 쓴다. Panda 버퍼 캡처는 검게 나온다.
-조이콘을 쓰는 프로세스는 한 번에 하나만 띄운다(둘이면 HID read error).
+조이콘을 쓰는 프로세스는 한 번에 하나만 띄운다(둘이면 HID read error). 단, 연결 관리자(`scripts/joycon_manager.py`)는 앱이 떠 있는 동안 HID를 열지 않으므로 함께 띄워도 된다.
+조이콘은 마지막 버튼 입력 15분 뒤 스스로 잠들고, 깨우면 자주 "고착"(페어링됨인데 HID가 죽음)되어 재페어링이 필요하다(`docs/JOYCON_LINK_MANAGER_PLAN.md` 9·10절). 실기 테스트 전에는 관리자를 먼저 띄우거나 `scripts/joycon_pair.py LR`로 재페어링한다. 진단 기록기: `scripts/joycon_link_log.py [--hold-hid]`.
 
 ## 하지 말 것
 - 실제 실행 없이 테스트 성공 보고

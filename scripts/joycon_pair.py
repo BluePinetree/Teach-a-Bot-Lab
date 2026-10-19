@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import sys
 import time
 from pathlib import Path
@@ -20,21 +19,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from teachabot.btlink.winbt import CONFIG_PATH, BtLink, find_pairable, load_macs, pair, unpair  # noqa: E402
+from teachabot.btlink.winbt import BtLink, find_pairable, load_macs, pair, save_mac, unpair  # noqa: E402
 from teachabot.input.joycon_device import PRODUCT_IDS, enumerate_joycons  # noqa: E402
 
 FIND_TIMEOUT_S = 90.0
 HID_TIMEOUT_S = 20.0
 
 
-def save_mac(side: str, mac: str) -> None:
-    cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8")) if CONFIG_PATH.exists() else {}
-    cfg.setdefault("joycons", {})[side] = mac
-    CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
-
-
 async def run(sides: list[str], keep: bool, verbose: bool) -> int:
-    macs = load_macs() if CONFIG_PATH.exists() else {}
+    macs = load_macs()
     todo = set()
     for s in sides:
         state = None
