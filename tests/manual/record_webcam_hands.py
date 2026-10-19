@@ -90,6 +90,9 @@ def main() -> int:
     ap.add_argument("--camera", type=int, default=0)
     ap.add_argument("--no-joycon", action="store_true")
     ap.add_argument("--smoke", type=float, default=0, help="(dev) quit after N seconds without starting")
+    ap.add_argument("--distance-sim", action="store_true",
+                    help="also run detection on downscaled frames (as if the camera were 2-4x farther), "
+                         "full frame and cropped to the work area, and log all of them")
     args = ap.parse_args()
 
     cap = cv2.VideoCapture(args.camera, cv2.CAP_MSMF)
@@ -102,7 +105,38 @@ def main() -> int:
         # so hand it the model bytes instead of a path.
         base_options=mpt.BaseOptions(model_asset_buffer=(ROOT / "models" / "hand_landmarker.task").read_bytes()),
         running_mode=vision.RunningMode.VIDEO, num_hands=2))
+    model_bytes = (ROOT / "models" / "hand_landmarker.task").read_bytes()
+    # distance simulation: scale s shrinks the image like a camera 1/s times farther;
+    # "roi" additionally crops the work area (digital zoom) before detection
+    VARIANTS = ([(s, m) for s in (0.5, 0.33, 0.25) for m in ("full", "roi")] + [(1.0, "roi")]) \
+        if args.distance_sim else []
+    var_lm = {f"s{s:.2f}_{m}": vision.HandLandmarker.create_from_options(vision.HandLandmarkerOptions(
+        base_options=mpt.BaseOptions(model_asset_buffer=model_bytes),
+        running_mode=vision.RunningMode.VIDEO, num_hands=2)) for s, m in VARIANTS}
+    roi = {"box": None}   # (x0, y0, x1, y1) in full-res pixels, fixed when the run starts
     devs = {} if args.no_joycon else {"L": JoyConDevice("L"), "R": JoyConDevice("R")}
+
+    def run_variants(frame, ts_ms):
+        out = {}
+        for (s, m) in VARIANTS:
+            name = f"s{s:.2f}_{m}"
+            if m == "roi" and roi["box"] is None:
+                continue
+            x0, y0, x1, y1 = roi["box"] if m == "roi" else (0, 0, W, H)
+            crop = frame[y0:y1, x0:x1]
+            small = cv2.resize(crop, (max(16, int(crop.shape[1] * s)), max(16, int(crop.shape[0] * s))),
+                               interpolation=cv2.INTER_AREA)
+            r = var_lm[name].detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB,
+                                                       data=cv2.cvtColor(small, cv2.COLOR_BGR2RGB)), ts_ms)
+            hs = []
+            cw, ch = x1 - x0, y1 - y0
+            for lmk in r.hand_landmarks:
+                palm = np.mean([(lmk[k].x, lmk[k].y) for k in PALM], axis=0)
+                size = np.hypot((lmk[0].x - lmk[9].x) * small.shape[1], (lmk[0].y - lmk[9].y) * small.shape[0])
+                hs.append({"palm_px": [float(x0 + palm[0] * cw), float(y0 + palm[1] * ch)],
+                           "size_px": round(float(size), 1)})     # wrist -> middle knuckle, in the image the model saw
+            out[name] = hs
+        return out
 
     def keep_connected():   # background: (re)connect any Joy-Con that is not delivering reports
         import threading
@@ -156,15 +190,18 @@ def main() -> int:
         now = time.perf_counter()
         if not ok:
             continue
+        ts_ms = int((now - t0) * 1000)
         res = lm.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB,
-                                           data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)), int((now - t0) * 1000))
+                                           data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)), ts_ms)
         hands = []
         for lmk, hd in zip(res.hand_landmarks, res.handedness):
             pts = [(p.x, p.y, p.z) for p in lmk]
             palm = np.mean([pts[k][:2] for k in PALM], axis=0)
             hands.append({"label": hd[0].category_name, "score": round(hd[0].score, 3),
                           "palm_px": [float(palm[0] * W), float(palm[1] * H)],
+                          "size_px": round(float(np.hypot((pts[0][0] - pts[9][0]) * W, (pts[0][1] - pts[9][1]) * H)), 1),
                           "lm": [[round(c, 5) for c in p] for p in pts]})
+        variants = run_variants(frame, ts_ms) if VARIANTS else None
         # user-paced: each step waits for a confirm press (ZR/ZL/A or Space), settles, then measures
         confirm = confirm_pressed() or state.pop("space", False)
         step = plan[state["i"]] if 0 <= state["i"] < len(plan) else None
@@ -186,7 +223,10 @@ def main() -> int:
                     state["i"] += 1
                     state["sub"], state["t_step"] = "wait", now
                     step = plan[state["i"]] if state["i"] < len(plan) else None
-        write({"type": "frame", "t": now, "step": state["i"], "phase": phase, "hands": hands})
+        rec = {"type": "frame", "t": now, "step": state["i"], "phase": phase, "hands": hands}
+        if variants is not None:
+            rec["variants"] = variants
+        write(rec)
         flush_joycons()
         stats["frames"] += 1
         stats["both"] += len(hands) == 2
@@ -211,6 +251,13 @@ def main() -> int:
             draw_sheet(view, None, "both")
             if confirm:
                 state["i"], state["t_step"], state["sub"] = 0, now, "wait"
+                if VARIANTS:   # work-area crop: half the width, 60% of the height, centred on the hands
+                    c = np.mean([h["palm_px"] for h in hands], axis=0) if hands else np.array([W / 2, H / 2])
+                    bw, bh = int(W * 0.5), int(H * 0.6)
+                    x0 = int(np.clip(c[0] - bw / 2, 0, W - bw))
+                    y0 = int(np.clip(c[1] - bh / 2, 0, H - bh))
+                    roi["box"] = (x0, y0, x0 + bw, y0 + bh)
+                    write({"type": "roi", "box": roi["box"]})
         elif step is None:
             break
         else:
