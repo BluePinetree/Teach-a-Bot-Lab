@@ -12,6 +12,13 @@ Joy-Con L/R로 3D 양손 집게를 조종 → 학생 시범 기록 → 실제 �
 ## 개발 원칙
 - Bottom-up: 현재 Phase가 실기 검증되기 전에 상위 Phase 코드를 대량 작성하지 않는다.
 - Phase 완료마다 보고: 구현 기능 / 실행한 검증 / 성공·실패 / 알려진 문제 / 변경 파일 / 다음 목표. PROGRESS.md 갱신 후 코드와 문서를 함께 커밋.
+- 커밋 메시지는 **Conventional Commits** 형식(2026-10-20 사용자 요청, `bc8fd28` 이전 커밋은 예전 형식):
+  - 제목: `<type>(<scope>): <설명>` — 72자 이내, 명령형, 끝에 마침표 없음. 설명은 영어(기존 기록과 맞춤).
+  - type: `feat`(새 기능) `fix`(버그 수정) `docs`(문서만) `test`(테스트만) `refactor`(동작 그대로 구조 변경) `perf`(성능) `build`(의존성·빌드) `chore`(그 밖의 잡무). 하위 호환을 깨면 `feat!:` 처럼 `!`를 붙이고 본문에 `BREAKING CHANGE:` 를 쓴다.
+  - scope 예: `btlink`, `input`, `aloha`, `learning`, `app`, `scripts`. 여러 곳이면 생략한다.
+  - 본문: 빈 줄 다음에 `- ` 목록으로 무엇을 왜 바꿨는지, 실측 숫자와 검증 결과(테스트 수, 실기 결과)를 적는다. 하지 않은 것·확인하지 못한 것도 적는다.
+  - 한 커밋에는 한 종류의 변경만 담는다. 기능과 그 기능의 문서·테스트는 함께 묶어도 된다.
+  - 예: `feat(btlink): auto re-pair stuck Joy-Cons and warn before the 15-minute sleep`
 - 입력 장치·시뮬레이션·학습·UI 모듈 분리. 게임 코드는 Joy-Con을 직접 참조하지 않는다.
 
 ## 현재 스택
