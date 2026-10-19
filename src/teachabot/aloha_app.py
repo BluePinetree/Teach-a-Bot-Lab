@@ -212,17 +212,17 @@ class Hud:
     def _draw_history(self, d: ImageDraw.ImageDraw, history: list[dict]) -> None:
         """Success rate per training round (measured on held-out layouts)."""
         rows = history[-5:]
-        x0, y0, bw = 16, 112, 330
+        x0, y0, bw = 16, 112, 380
         self._box(d, (x0, y0, x0 + bw, y0 + 40 + 34 * len(rows)))
         d.text((x0 + 12, y0 + 6), "AI 실력 (처음 보는 배치에서 시험)", font=self.f_small, fill=(255, 255, 255))
         for j, r in enumerate(rows):
             yy = y0 + 38 + 34 * j
             rate = float(r["success_rate"])
             d.text((x0 + 12, yy), r["label"], font=self.f_tiny, fill=(225, 228, 236))
-            bx = x0 + 128
-            d.rectangle((bx, yy + 2, bx + 120, yy + 20), fill=(60, 66, 80, 220))
-            d.rectangle((bx, yy + 2, bx + int(120 * rate), yy + 20), fill=(120, 230, 140, 255))
-            d.text((bx + 128, yy), f"{rate * 100:3.0f}%  큐브 {r['cubes_mean']:.2f}", font=self.f_tiny,
+            bx = x0 + 12 + int(max(d.textlength(x["label"], font=self.f_tiny) for x in rows)) + 10
+            d.rectangle((bx, yy + 2, bx + 100, yy + 20), fill=(60, 66, 80, 220))
+            d.rectangle((bx, yy + 2, bx + int(100 * rate), yy + 20), fill=(120, 230, 140, 255))
+            d.text((bx + 108, yy), f"{rate * 100:3.0f}%  큐브 {r['cubes_mean']:.2f}", font=self.f_tiny,
                    fill=(225, 228, 236))
 
 
@@ -268,7 +268,8 @@ def train_panel(trainer: LiveTrainer):
         lines.append((f"이전 AI ({prev['label']}): 성공 {prev['success_rate'] * 100:.0f}% · "
                       f"판당 큐브 {prev['cubes_mean']:.2f}개", dim))
     lines.append(("A 버튼을 누르면 새 AI가 해 봅니다", white))
-    return f"다시 배운 AI의 시험 결과 ({r.get('episodes', '?')}판, {el:.0f}초 걸림)", lines
+    took = r.get("total_s", el)                 # training + test, not the time since then
+    return f"다시 배운 AI의 시험 결과 ({r.get('episodes', '?')}판, {took:.0f}초 걸림)", lines
 
 
 def main() -> None:
