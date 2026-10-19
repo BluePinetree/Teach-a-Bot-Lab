@@ -45,7 +45,6 @@ MOTION_CAL_PATH = ROOT / "config" / "motion_calibration.json"
 LOG_DIR = ROOT / "data" / "logs"
 W, H = 1280, 720
 HAND_KO = {"left": "왼손", "right": "오른손"}
-CUBE_KO = {"left": "파란", "right": "주황"}
 HAND_RGB = {"left": (70, 130, 245), "right": (255, 150, 40)}
 WINDOW = "Teach-a-Bot Lab - ALOHA"
 PRACTICE_SEED_BASE = 3_000_000   # AI-mode layouts: unseen in training, separate from the test layouts
@@ -126,8 +125,19 @@ class S1Check:
         return all(k in self.done for k, _ in self.STEPS)
 
 
+TASK_TEXT = {
+    "s1": {"title": "S1 정리하기", "sub": "파란 큐브 → 파란 상자 (왼손),  주황 큐브 → 주황 상자 (오른손)",
+           "hand": {"left": "왼손 (파란)", "right": "오른손 (주황)"}, "done": "상자 안!"},
+    "s2": {"title": "S2 양팔 트레이 들기", "sub": "두 손으로 손잡이를 잡고 함께 들어 노란 칸에 내려놓기 · 큐브를 떨어뜨리지 말기",
+           "hand": {"left": "왼손", "right": "오른손"}, "done": "도착!"},
+}
+FAIL_TEXT = {"cube_off": "실패: 큐브가 트레이에서 떨어졌어요", "tray_fell": "실패: 트레이가 떨어졌어요",
+             "timeout": "실패: 시간 초과"}
+
+
 class Hud:
-    def __init__(self):
+    def __init__(self, task: str = "s1"):
+        self.text = TASK_TEXT[task]
         self.f_title = ImageFont.truetype(str(FONT_BOLD_PATH if FONT_BOLD_PATH.exists() else FONT_PATH), 30)
         self.f_big = ImageFont.truetype(str(FONT_BOLD_PATH if FONT_BOLD_PATH.exists() else FONT_PATH), 64)
         self.f = ImageFont.truetype(str(FONT_PATH), 22)
@@ -148,9 +158,8 @@ class Hud:
         over = Image.new("RGBA", img.size, (0, 0, 0, 0))
         d = ImageDraw.Draw(over)
         self._box(d, (16, 14, 640, 98))
-        d.text((32, 20), "S1 정리하기", font=self.f_title, fill=(255, 255, 255))
-        d.text((32, 62), "파란 큐브 → 파란 상자 (왼손),  주황 큐브 → 주황 상자 (오른손)", font=self.f_small,
-               fill=(220, 225, 235))
+        d.text((32, 20), self.text["title"], font=self.f_title, fill=(255, 255, 255))
+        d.text((32, 62), self.text["sub"], font=self.f_small, fill=(220, 225, 235))
         if mode_line:
             mw = d.textlength(mode_line, font=self.f) + 28
             self._box(d, (W - 16 - mw, 106, W - 16, 142))
@@ -169,7 +178,7 @@ class Hud:
             hand = frame.hand(h) if frame else None
             conn = hand is not None and hand.connected
             tg = env.targets[h]
-            d.text((x0 + 14, y0 + 6), f"{HAND_KO[h]} ({CUBE_KO[h]})", font=self.f, fill=HAND_RGB[h])
+            d.text((x0 + 14, y0 + 6), self.text["hand"][h], font=self.f, fill=HAND_RGB[h])
             if controllers:
                 who = controllers[h]
                 tag, col = ("AI", (120, 200, 255)) if who == "ai" else ("사람이 넘겨받음", (255, 190, 90))
@@ -180,7 +189,7 @@ class Hud:
             ok = conn or ai_hand                   # an AI-driven arm does not need its Joy-Con
             status = "연결 안 됨" if not ok else ("집는 중" if tg.grip else "열림")
             if ok and info.in_tray[h]:
-                status += " · 상자 안!"
+                status += " · " + self.text["done"]
             d.text((x0 + 150, y0 + 8), status, font=self.f_small, fill=(255, 255, 255) if ok else (255, 120, 120))
             if ai_hand or mapper.wrist_ready(h):
                 wrist = f"손목  기울기 {np.rad2deg(tg.pitch):+4.0f}°   회전 {np.rad2deg(tg.twist):+4.0f}°"
@@ -343,6 +352,7 @@ def train_panel(trainer: LiveTrainer):
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", choices=("joycon", "keyboard", "replay"), default="joycon")
+    ap.add_argument("--task", choices=("s1", "s2"), default="s1", help="s1 = 정리하기, s2 = 양팔 트레이 들기")
     ap.add_argument("--replay", type=Path, help="input recording for --input replay")
     ap.add_argument("--time-limit", type=float, default=40.0)
     ap.add_argument("--move", choices=MOVE_SOURCES, default="stick", help="movement source (D9)")
@@ -368,11 +378,17 @@ def main() -> None:
                          "to run the whole visit flow end to end (use a session code starting with _)")
     args = ap.parse_args()
 
-    env = AlohaSortEnv(time_limit=args.time_limit)
+    if args.task == "s2" and (args.policy or args.visit or args.check):
+        raise SystemExit("S2: 지금은 조작과 시범 기록(--record)만 됩니다. 학습·견학 모드는 S2 시범을 모은 뒤에 붙입니다.")
+    if args.task == "s2":
+        from teachabot.aloha.tray_env import AlohaTrayEnv
+        env = AlohaTrayEnv(time_limit=args.time_limit)
+    else:
+        env = AlohaSortEnv(time_limit=args.time_limit)
     mapper = TeleopMapper(TeleopSettings(move_source=args.move, wrist_source=args.wrist),
                           MotionCalibration.load(MOTION_CAL_PATH))
     renderer = mujoco.Renderer(env.model, H, W)
-    hud = Hud()
+    hud = Hud(args.task)
     check = S1Check() if args.check else None
     seed, episode = args.seed, 1
     if args.policy and args.seed == 0:
@@ -395,7 +411,7 @@ def main() -> None:
     provider = _NeutralProvider() if args.test_autopilot else make_provider(args.input, args.replay)
     provider.connect()
     # AI mode always saves takeover episodes (session "live" unless --record names one)
-    writer = DemoWriter(args.record or "live", provider.source) if (args.record or policy) else None
+    writer = DemoWriter(args.record or "live", provider.source, task=args.task) if (args.record or policy) else None
     controllers = {h: "ai" if policy else "human" for h in HANDS}
     takeover_t: dict = {}
     trainer = LiveTrainer(episodes=args.eval_episodes) if policy else None
@@ -426,7 +442,7 @@ def main() -> None:
     next_video_t = 0.0
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    recorder = InputRecorder(LOG_DIR / f"aloha_s1_input_{stamp}.jsonl", provider.source,
+    recorder = InputRecorder(LOG_DIR / f"aloha_{args.task}_input_{stamp}.jsonl", provider.source,
                              meta={"app": "aloha_app", "move": args.move, "wrist": args.wrist})
     episodes: list[dict] = []
     frame_ms: list[float] = []
@@ -654,6 +670,8 @@ def main() -> None:
             if result is None and info.done:
                 if info.success:
                     result = f"성공!  {info.time:.1f}초"
+                elif info.reason:
+                    result = FAIL_TEXT.get(info.reason, "실패")
                 else:
                     fell = any(env.cube_pos(h)[2] < -0.05 for h in HANDS)
                     result = "실패: 큐브가 떨어졌어요" if fell else "실패: 시간 초과"
@@ -733,7 +751,7 @@ def main() -> None:
             video.release()
         if not headless:
             cv2.destroyAllWindows()
-        summary = {"created": stamp, "input": provider.source, "move": args.move, "wrist": args.wrist,
+        summary = {"created": stamp, "task": args.task, "input": provider.source, "move": args.move, "wrist": args.wrist,
                    "episodes": episodes, "frames": len(frame_ms),
                    "wall_s": round(time.perf_counter() - t_run, 2), "sim_s_current_episode": round(env.t, 2),
                    "frame_ms_p50": float(np.percentile(frame_ms, 50)) if frame_ms else None,
@@ -745,7 +763,7 @@ def main() -> None:
                    "policy": str(args.policy) if args.policy else None,
                    "retrains": retrains, "video": str(args.video) if args.video else None,
                    "visit": flow.summary() if flow else None}
-        path = LOG_DIR / f"aloha_s1_{'check' if check else ('visit' if flow else 'run')}_{stamp}.json"
+        path = LOG_DIR / f"aloha_{args.task}_{'check' if check else ('visit' if flow else 'run')}_{stamp}.json"
         path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
         print("summary", path)
         print(json.dumps(summary, ensure_ascii=False, indent=2))

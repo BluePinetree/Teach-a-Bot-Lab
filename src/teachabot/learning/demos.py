@@ -48,8 +48,8 @@ class Demo:
 
 
 class DemoWriter:
-    def __init__(self, session: str, source: str, out_dir: Path = DEMO_DIR):
-        self.session, self.source, self.out_dir = session, source, Path(out_dir)
+    def __init__(self, session: str, source: str, out_dir: Path = DEMO_DIR, task: str = "s1"):
+        self.session, self.source, self.out_dir, self.task = session, source, Path(out_dir), task
         self.obs: list[np.ndarray] = []
         self.act: list[np.ndarray] = []
         self.human: list[tuple[bool, bool]] = []
@@ -75,7 +75,7 @@ class DemoWriter:
         tag = "take" if kind == "takeover" else ("ok" if success else "fail")
         path = self.out_dir / f"{self.session}_{stamp}_{tag}.npz"
         from teachabot.aloha.env import OBS_VERSION
-        meta = {"task": "s1", "kind": kind, "in_tray": {k: bool(v) for k, v in (in_tray or {}).items()} or None,
+        meta = {"task": self.task, "kind": kind, "in_tray": {k: bool(v) for k, v in (in_tray or {}).items()} or None,
                 "obs_version": OBS_VERSION, "layout_seed": int(layout_seed), "success": bool(success),
                 "duration": round(float(duration), 3), "session": self.session, "source": self.source,
                 "created": stamp, "steps": len(self.obs), **(extra or {})}
@@ -94,7 +94,8 @@ def load_demo(path: Path) -> Demo:
 
 
 def load_demos(directory: Path = DEMO_DIR, only_success: bool = True, limit: int | None = None,
-               sessions: list[str] | None = None, kinds: tuple[str, ...] = ("demo",)) -> list[Demo]:
+               sessions: list[str] | None = None, kinds: tuple[str, ...] = ("demo",),
+               task: str = "s1") -> list[Demo]:
     """Oldest first, so "the first k demos" means the order people recorded them.
     Default: full demonstrations only; pass kinds=("demo", "takeover") for corrections too."""
     demos = [load_demo(p) for p in sorted(Path(directory).glob("*.npz"))]
@@ -102,7 +103,9 @@ def load_demos(directory: Path = DEMO_DIR, only_success: bool = True, limit: int
     if sessions:
         demos = [d for d in demos if d.meta["session"] in sessions]
     from teachabot.aloha.env import OBS_VERSION
-    demos = [d for d in demos if d.meta.get("obs_version", 1) == OBS_VERSION and d.kind in kinds]
+    demos = [d for d in demos if d.meta.get("task", "s1") == task and d.kind in kinds]
+    if task == "s1":                       # S1 observation layout changed once (v1 -> v2)
+        demos = [d for d in demos if d.meta.get("obs_version", 1) == OBS_VERSION]
     if only_success:
         demos = [d for d in demos if d.success or (d.kind == "takeover" and any(d.hand_done(h) for h in ("left", "right")))]
     return demos[:limit] if limit else demos

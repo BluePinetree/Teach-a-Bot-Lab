@@ -1,4 +1,5 @@
-"""S1 scene: the MuJoCo Menagerie ALOHA 2 workcell plus two cubes and two trays.
+"""Scenes on the MuJoCo Menagerie ALOHA 2 workcell: S1 (two cubes, two trays) and S2 (one tray to
+carry with both arms, see _add_s2_objects).
 
 World frame (Menagerie): x = operator's right, y = away from the operator, z = up,
 table top at z = 0. The left arm base sits at x = -0.469, the right at x = +0.469;
@@ -91,7 +92,49 @@ def _inline_includes(xml: str, assets: dict[str, bytes]) -> str:
     return _INCLUDE.sub(body, xml)
 
 
-def build_spec(layout: TaskLayout = S1_LAYOUT, with_task_objects: bool = True) -> mujoco.MjSpec:
+# -- S2 "양팔 트레이 들기": one tray with a handle at each end, a cube riding on it, a goal mat ----
+S2_PLATE_HALF = (0.15, 0.08, 0.006)      # 30 x 16 x 1.2 cm
+S2_RIM_H, S2_RIM_T = 0.012, 0.006
+S2_HANDLE_HALF = (0.015, 0.0125, 0.025)  # 3 x 2.5 x 5 cm, gripped across its 2.5 cm (y)
+S2_HANDLE_X = 0.13                       # handle centres at x = +-13 cm from the tray centre
+S2_TRAY_MASS, S2_CUBE_MASS = 0.25, 0.05
+S2_CUBE_FRICTION = 0.5                   # a tilted tray lets the cube slide (rim stops small tilts)
+S2_GOAL = (0.0, 0.22)                    # goal mat centre (visual only)
+S2_GOAL_HALF = (0.07, 0.06)              # tray centre must end inside this
+S2_TRAY_SPAWN = ((-0.03, 0.03), (-0.10, 0.0))
+TRAY_YELLOW = (1.0, 0.85, 0.25, 1.0)
+
+
+def _add_s2_objects(world: mujoco.MjsBody) -> None:
+    px, py, pz = S2_PLATE_HALF
+    tray = world.add_body(name="s2_tray", pos=[0, -0.05, pz + 0.001])
+    tray.add_freejoint(name="s2_tray_joint")
+    grey = [0.75, 0.77, 0.80, 1.0]
+    plate_mass = S2_TRAY_MASS - 2 * 0.025
+    tray.add_geom(name="s2_plate", type=mujoco.mjtGeom.mjGEOM_BOX, size=[px, py, pz], mass=plate_mass, rgba=grey)
+    rz = pz + S2_RIM_H / 2
+    for i, (dx, dy, sx, sy) in enumerate([(px - S2_RIM_T / 2, 0, S2_RIM_T / 2, py), (-(px - S2_RIM_T / 2), 0, S2_RIM_T / 2, py),
+                                          (0, py - S2_RIM_T / 2, px, S2_RIM_T / 2), (0, -(py - S2_RIM_T / 2), px, S2_RIM_T / 2)]):
+        tray.add_geom(name=f"s2_rim{i}", type=mujoco.mjtGeom.mjGEOM_BOX, size=[sx, sy, S2_RIM_H / 2],
+                      pos=[dx, dy, rz], mass=0.005, rgba=grey)
+    hx, hy, hz = S2_HANDLE_HALF
+    for hand, sign in (("left", -1), ("right", 1)):
+        r, g, b, _ = COLOR_OF[hand]
+        tray.add_geom(name=f"s2_handle_{hand}", type=mujoco.mjtGeom.mjGEOM_BOX, size=[hx, hy, hz],
+                      pos=[sign * S2_HANDLE_X, 0, pz + hz], mass=0.025, rgba=[r, g, b, 1.0], friction=[1.5, 0.01, 0.001],
+                      condim=4)
+        tray.add_site(name=f"s2_handle_{hand}", pos=[sign * S2_HANDLE_X, 0, pz + hz])
+    cube = world.add_body(name="s2_cube", pos=[0, -0.05, 2 * pz + CUBE_HALF + 0.002])
+    cube.add_freejoint(name="s2_cube_joint")
+    cube.add_geom(name="s2_cube", type=mujoco.mjtGeom.mjGEOM_BOX, size=[CUBE_HALF] * 3, mass=S2_CUBE_MASS,
+                  rgba=list(TRAY_YELLOW), friction=[S2_CUBE_FRICTION, 0.01, 0.001], condim=4)
+    gx, gy = S2_GOAL_HALF
+    goal = world.add_body(name="s2_goal", pos=[S2_GOAL[0], S2_GOAL[1], 0.0006])
+    goal.add_geom(type=mujoco.mjtGeom.mjGEOM_BOX, size=[gx + px, gy + py, 0.0005], contype=0, conaffinity=0,
+                  rgba=[1.0, 0.85, 0.25, 0.35], group=2)
+
+
+def build_spec(layout: TaskLayout = S1_LAYOUT, with_task_objects: bool = True, task: str = "s1") -> mujoco.MjSpec:
     """Menagerie scene + task objects. `with_task_objects=False` gives the robot-only
     model used for inverse kinematics."""
     assets = _menagerie_assets()
@@ -103,7 +146,11 @@ def build_spec(layout: TaskLayout = S1_LAYOUT, with_task_objects: bool = True) -
     world.add_light(name="key", pos=[0.6, -1.0, 1.6], dir=[-0.35, 0.6, -0.75], castshadow=True,
                     diffuse=[0.55, 0.55, 0.55], specular=[0.1, 0.1, 0.1])
     world.add_camera(name="demo_cam", pos=[0, -1.05, 0.78], xyaxes=[1, 0, 0, 0, 0.62, 0.78], fovy=50)
-    if with_task_objects:
+    if with_task_objects and task == "s2":
+        _add_s2_objects(world)
+        for hand in HANDS:
+            _add_marker(world, hand)
+    elif with_task_objects:
         for hand in HANDS:
             _add_tray(world, TRAY_OF[hand], layout.tray_pos[hand], COLOR_OF[hand])
             _add_cube(world, CUBE_OF[hand], COLOR_OF[hand])
@@ -119,5 +166,5 @@ def _add_marker(world: mujoco.MjsBody, hand: str) -> None:
                   rgba=[r, g, b, 0.45], group=2)
 
 
-def build_model(layout: TaskLayout = S1_LAYOUT, with_task_objects: bool = True) -> mujoco.MjModel:
-    return build_spec(layout, with_task_objects).compile()
+def build_model(layout: TaskLayout = S1_LAYOUT, with_task_objects: bool = True, task: str = "s1") -> mujoco.MjModel:
+    return build_spec(layout, with_task_objects, task).compile()

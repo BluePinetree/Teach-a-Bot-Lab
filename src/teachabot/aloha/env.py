@@ -69,6 +69,7 @@ class StepInfo:
     success: bool
     failed: bool
     in_tray: dict = field(default_factory=dict)
+    reason: str | None = None       # why it failed, when the task knows (S2: cube_off / tray_fell / timeout)
 
     @property
     def done(self) -> bool:
@@ -95,11 +96,16 @@ def target_rotation(hand: str, pitch: float, twist: float) -> np.ndarray:
 
 
 class AlohaSortEnv:
+    """S1 정리하기. Task subclasses (S2 tray) override the object hooks: _build_model,
+    _init_objects, _place_objects, info, observation."""
+    task = "s1"
+    obs_dim = OBS_DIM
+
     def __init__(self, layout: TaskLayout = S1_LAYOUT, time_limit: float = 40.0, ik_iters: int = 2):
         self.layout = layout
         self.time_limit = time_limit
         self.ik_iters = ik_iters
-        self.model = build_model(layout)
+        self.model = self._build_model()
         self.data = mujoco.MjData(self.model)
         self.n_substeps = int(round(CONTROL_DT / self.model.opt.timestep))
 
@@ -118,13 +124,32 @@ class AlohaSortEnv:
         self._arm_act = {h: np.array([m.actuator(f"{h}/{j}").id for j in ARM_JOINTS]) for h in HANDS}
         self._grip_act = {h: m.actuator(f"{h}/gripper").id for h in HANDS}
         self._finger_qadr = {h: m.joint(f"{h}/left_finger").qposadr[0] for h in HANDS}
-        self._cube_qadr = {h: m.joint(f"{CUBE_OF[h]}_joint").qposadr[0] for h in HANDS}
+        self._init_objects()
         self._arm_bodies = [m.body(f"{h}/base_link").id for h in HANDS]
         self._marker = {h: m.body(f"{h}/marker").mocapid[0] for h in HANDS}
         self.targets: dict[str, HandTarget] = {}
         self.rng = np.random.default_rng(0)
         self.seed: int | None = None
         self.t = 0.0
+
+    # -- task hooks (S1) --------------------------------------------------------------------
+    def _build_model(self) -> mujoco.MjModel:
+        return build_model(self.layout)
+
+    def _init_objects(self) -> None:
+        self._cube_qadr = {h: self.model.joint(f"{CUBE_OF[h]}_joint").qposadr[0] for h in HANDS}
+
+    def _place_objects(self) -> None:
+        """Random layout for this episode. The draw order (left x, y, yaw, then right) must not
+        change: recorded demonstrations and the test layouts are identified by seed."""
+        d = self.data
+        for h in HANDS:
+            (xr, yr) = self.layout.cube_spawn[h]
+            x, y = self.rng.uniform(*xr), self.rng.uniform(*yr)
+            yaw = self.rng.uniform(-self.layout.cube_yaw_range, self.layout.cube_yaw_range)
+            a = self._cube_qadr[h]
+            d.qpos[a:a + 3] = (x, y, CUBE_HALF + 0.001)
+            d.qpos[a + 3:a + 7] = (np.cos(yaw / 2), 0, 0, np.sin(yaw / 2))
 
     # -- episode ---------------------------------------------------------------------------
     def reset(self, seed: int | None = None) -> np.ndarray:
@@ -135,13 +160,8 @@ class AlohaSortEnv:
         self.t = 0.0
         for h in HANDS:
             d.qpos[self._arm_qadr[h]] = NEUTRAL_Q
-            (xr, yr) = self.layout.cube_spawn[h]
-            x, y = self.rng.uniform(*xr), self.rng.uniform(*yr)
-            yaw = self.rng.uniform(-self.layout.cube_yaw_range, self.layout.cube_yaw_range)
-            a = self._cube_qadr[h]
-            d.qpos[a:a + 3] = (x, y, CUBE_HALF + 0.001)
-            d.qpos[a + 3:a + 7] = (np.cos(yaw / 2), 0, 0, np.sin(yaw / 2))
             self.targets[h] = HandTarget(pos=np.array([*HOME_XY[h], Z_CARRY]))
+        self._place_objects()
         # Start the arms already in the pointing-down home pose (converged IK, no transient).
         q = self.config.q.copy()
         for h in HANDS:
@@ -250,5 +270,5 @@ class AlohaSortEnv:
             cube = self.cube_pos(h)
             parts += [cube - self.targets[h].pos, np.asarray(self.layout.tray_pos[h]) - cube[:2]]
         obs = np.concatenate([np.asarray(p, float).ravel() for p in parts])
-        assert obs.shape == (OBS_DIM,)
+        assert obs.shape == (self.obs_dim,)
         return obs
