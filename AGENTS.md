@@ -15,7 +15,7 @@ Joy-Con L/R로 3D 양손 집게를 조종 → 학생 시범 기록 → 실제 �
 - 입력 장치·시뮬레이션·학습·UI 모듈 분리. 게임 코드는 Joy-Con을 직접 참조하지 않는다.
 
 ## 현재 스택
-Python 3.12 (`.venv`, uv), joycon-python 0.2.4 + hidapi 0.15.0, numpy, pytest. 입력은 `teachabot.input` (InputProvider: JoyCon/Keyboard/Replay). 3D: Ursina 8.3 (`teachabot.app`), 시뮬레이션 `teachabot.simulation`(엔진 독립), 화면 `teachabot.ui`, 모션 조작 `teachabot.input.motion`.
+Python 3.12 (`.venv`, uv), joycon-python 0.2.4 + hidapi 0.15.0, numpy, pytest. **현재 메인 환경(D10): MuJoCo 3.16 + Menagerie ALOHA 2 + mink IK** — `teachabot.aloha`(scene/env/teleop), 앱 `teachabot.aloha_app`. 모델 파일은 `scripts/download_aloha.py`로 받음(git 미추적). 한글 경로 때문에 MuJoCo에는 파일 경로 대신 바이트를 넘긴다. 입력은 `teachabot.input` (InputProvider: JoyCon/Keyboard/Replay). 3D: Ursina 8.3 (`teachabot.app`), 시뮬레이션 `teachabot.simulation`(엔진 독립), 화면 `teachabot.ui`, 모션 조작 `teachabot.input.motion`.
 
 ## 명령
 ```powershell
@@ -26,6 +26,12 @@ Python 3.12 (`.venv`, uv), joycon-python 0.2.4 + hidapi 0.15.0, numpy, pytest. �
 .venv\Scripts\python.exe -m teachabot.app [--control tilt|point] [--input keyboard] [--check]  # 3D 앱
 .venv\Scripts\python.exe scripts\check_ursina_env.py --input joycon  # 엔진·한글 경로·fps 점검
 ```
+```powershell
+.venv\Scripts\python.exe scripts\download_aloha.py                    # ALOHA 모델 (16MB, 고정 커밋 + sha256)
+.venv\Scripts\python.exe -m teachabot.aloha_app [--check] [--input keyboard] [--move stick|tilt|point] [--wrist imu|off]
+.venv\Scripts\python.exe -m teachabot.aloha_app --screenshot assets\_check\x.png   # 창 없이 화면 저장
+```
+ALOHA 앱은 두 조이콘이 연결되고 오른쪽 A(키보드 Space)를 눌러야 시작한다. Esc 또는 Ctrl-C로 끝내면 요약 JSON이 `data/logs`에 저장된다.
 수동 테스트는 화면에 체크리스트가 뜨므로, 사용자에게 보이는 창(터미널 패널 등)에서 실행해야 한다.
 3D 앱 화면을 직접 확인할 때는 `--screenshot PATH`(창을 맨 앞에 띄워 2초 뒤 캡처 후 종료)를 쓴다. Panda 버퍼 캡처는 검게 나온다.
 조이콘을 쓰는 프로세스는 한 번에 하나만 띄운다(둘이면 HID read error).

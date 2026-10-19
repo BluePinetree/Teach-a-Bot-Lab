@@ -13,3 +13,4 @@ assets/_check/
 config/motion_calibration.json
 # downloaded model files (see scripts/download_models.ps1)
 models/*.task
+assets/third_party/
