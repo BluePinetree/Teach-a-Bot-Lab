@@ -91,3 +91,46 @@ def test_evaluate_policy_runs_in_parallel(scripted_demos, tmp_path):
     res = evaluate_policy(tmp_path / "p.npz", episodes=2, workers=2, time_limit=2.0)
     assert len(res.episodes) == 2 and {e["layout_seed"] for e in res.episodes} == {1_000_000, 1_000_001}
     assert 0.0 <= res.success_rate <= 1.0
+
+
+# -- BC v2 (per hand, mirrored, time-compressed) ------------------------------------------
+
+from teachabot.learning.bc_hand import (HAND_OBS_DIM, HandBCConfig, HandPolicy, hand_act, hand_dataset,  # noqa: E402
+                                        hand_obs, train_hand_bc, unmirror_act)
+
+
+def test_hand_mirroring_is_consistent():
+    env = AlohaSortEnv()
+    obs = env.reset(3)
+    l, r = hand_obs(obs, "left"), hand_obs(obs, "right")
+    assert l.shape == r.shape == (HAND_OBS_DIM,)
+    np.testing.assert_allclose(l[:6], r[:6], atol=1e-6)       # mirrored home poses coincide
+    assert r[8] == pytest.approx(-env.cube_pos("right")[0])   # cube x is mirrored
+    a = np.linspace(-1, 1, 12)
+    np.testing.assert_allclose(unmirror_act(hand_act(a, "right"), "right"), a[6:])
+
+
+def test_waiting_frames_are_cut_per_hand(tmp_path):
+    env = AlohaSortEnv()
+    obs = env.reset(0)
+    w = DemoWriter("s1", "test", tmp_path)
+    w.start()
+    go = commands_to_action({"left": ArmCommand(move=(1.0, 0.0)), "right": ArmCommand(vz=1.0)})
+    wait = commands_to_action({h: ArmCommand(vz=1.0) for h in HANDS})
+    for t in range(30):                 # 10 active, 10 waiting, 10 active (left); right only waits
+        w.add(obs, wait if 10 <= t < 20 else go)
+    w.finish(0, True, 0.6)
+    X, Y, counts = hand_dataset(load_demos(tmp_path), HandBCConfig())
+    assert counts["kept"] == 20          # left: 20 active frames kept, right: all waiting -> cut
+    assert counts["dropped_idle"] == 10 + 30
+
+
+def test_hand_bc_trains_and_loads_as_hand_policy(scripted_demos, tmp_path):
+    from teachabot.learning.bc import NumpyPolicy
+    pol = train_hand_bc(scripted_demos, HandBCConfig(iters=100))
+    pol.save(tmp_path / "h.npz")
+    loaded = NumpyPolicy.load(tmp_path / "h.npz")
+    assert isinstance(loaded, HandPolicy)
+    obs = scripted_demos[0].obs[0]
+    np.testing.assert_allclose(loaded(obs), pol(obs))
+    assert loaded(obs).shape == (12,)

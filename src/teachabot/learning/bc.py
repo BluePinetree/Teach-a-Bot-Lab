@@ -64,11 +64,16 @@ class NumpyPolicy:
         np.savez(path, meta=json.dumps(self.meta), n_layers=len(self.weights), **arrays)
 
     @classmethod
-    def load(cls, path: Path) -> "NumpyPolicy":
+    def load(cls, path: Path):
+        """Loads either policy kind (whole-robot MLP or per-hand mirrored MLP)."""
         with np.load(path) as z:
             n = int(z["n_layers"])
-            return cls([(z[f"W{i}"], z[f"b{i}"]) for i in range(n)], z["obs_mean"], z["obs_std"],
-                       json.loads(str(z["meta"])))
+            meta = json.loads(str(z["meta"]))
+            args = ([(z[f"W{i}"], z[f"b{i}"]) for i in range(n)], z["obs_mean"], z["obs_std"], meta)
+        if meta.get("kind") == "hand_mirror":
+            from .bc_hand import HandPolicy
+            return HandPolicy(*args)
+        return cls(*args)
 
 
 def dataset(demos: list[Demo]) -> tuple[np.ndarray, np.ndarray]:
