@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -134,3 +136,43 @@ def test_hand_bc_trains_and_loads_as_hand_policy(scripted_demos, tmp_path):
     obs = scripted_demos[0].obs[0]
     np.testing.assert_allclose(loaded(obs), pol(obs))
     assert loaded(obs).shape == (12,)
+
+
+# -- takeover data and in-session retraining ---------------------------------------------
+
+def test_takeover_uses_only_the_persons_part_of_a_fixed_hand(tmp_path):
+    env = AlohaSortEnv()
+    obs = env.reset(0)
+    w = DemoWriter("t1", "test", tmp_path)
+    w.start()
+    go = commands_to_action({"left": ArmCommand(move=(1.0, 0.0)), "right": ArmCommand(move=(-1.0, 0.0))})
+    for t in range(30):                 # AI drives both for 10 steps, then the person takes the right hand
+        w.add(obs, go, (False, t >= 10))
+    path = w.finish(0, False, 0.6, in_tray={"left": False, "right": True}, kind="takeover")
+    assert path.name.endswith("_take.npz")
+    demos = load_demos(tmp_path, kinds=("demo", "takeover"))
+    assert len(demos) == 1 and demos[0].kind == "takeover"
+    assert load_demos(tmp_path) == []                      # default: full demonstrations only
+    X, Y, counts = hand_dataset(demos, HandBCConfig())
+    assert counts["kept"] == 20                            # right hand, person's 20 steps; left (AI, not fixed) unused
+
+
+def test_takeover_without_person_is_not_saved(tmp_path):
+    w = DemoWriter("t1", "test", tmp_path)
+    w.start()
+    w.add(np.zeros(OBS_DIM), np.zeros(12), (False, False))
+    assert w.finish(0, True, 0.1, kind="takeover") is None and w.saved == 0
+
+
+def test_live_trainer_retrains_and_evaluates(scripted_demos, tmp_path):
+    import shutil
+    from teachabot.learning import live
+    for d in scripted_demos:
+        shutil.copy(d.path, tmp_path / d.path.name)
+    live.POLICY_DIR = tmp_path / "policies"
+    t = live.LiveTrainer(tmp_path, episodes=2, workers=2, cfg=HandBCConfig(iters=100))
+    assert t.start() and not t.start()                     # one retrain at a time
+    t._thread.join(timeout=300)
+    assert t.state == "done", t.message
+    assert t.result["episodes"] == 2 and t.history[-1] is t.result
+    assert (tmp_path / "policies" / Path(t.result["policy"]).name).exists()

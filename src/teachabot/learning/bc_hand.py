@@ -108,8 +108,16 @@ def hand_dataset(demos: list[Demo], cfg: HandBCConfig) -> tuple[np.ndarray, np.n
     X, Y = [], []
     kept = dropped = 0
     for d in demos:
-        obs, act = trim_idle_start(d)
-        for h in HANDS:
+        if d.kind == "demo":
+            first = len(d.obs) - len(trim_idle_start(d)[0])
+        else:
+            first = 0
+        for i_h, h in enumerate(HANDS):
+            # a hand is learned from only where a person drove it and its cube ended in its tray
+            mask = d.hand_mask(i_h)[first:]
+            if not d.hand_done(h) or not mask.any():
+                continue
+            obs, act = d.obs[first:][mask], d.act[first:][mask]
             o = np.stack([hand_obs(x, h) for x in obs])
             a = np.stack([hand_act(x, h) for x in act])
             if cfg.drop_idle:
@@ -125,7 +133,8 @@ def hand_dataset(demos: list[Demo], cfg: HandBCConfig) -> tuple[np.ndarray, np.n
             kept += len(o)
             X.append(o)
             Y.append(y)
-    return np.concatenate(X).astype(np.float32), np.concatenate(Y).astype(np.float32),         {"kept": kept, "dropped_idle": dropped}
+    stats = {"kept": kept, "dropped_idle": dropped}
+    return np.concatenate(X).astype(np.float32), np.concatenate(Y).astype(np.float32), stats
 
 
 class HandPolicy:
@@ -199,6 +208,7 @@ def train_hand_bc(demos: list[Demo], cfg: HandBCConfig = HandBCConfig(), log=Non
     weights = [(m.weight.detach().numpy().T.astype(np.float64), m.bias.detach().numpy().astype(np.float64))
                for m in net if isinstance(m, nn.Linear)]
     cfg_d = {k: v for k, v in cfg.__dict__.items()}
-    meta = {"algo": "bc_hand_mirror", "config": cfg_d, "n_demos": len(demos), "n_samples": int(n), **counts,
+    meta = {"algo": "bc_hand_mirror", "config": cfg_d, "n_demos": sum(d.kind == "demo" for d in demos),
+            "n_takeovers": sum(d.kind == "takeover" for d in demos), "n_samples": int(n), **counts,
             "demo_files": [d.path.name for d in demos], "train_s": round(time.perf_counter() - t0, 2)}
     return HandPolicy(weights, mean.astype(np.float64), std.astype(np.float64), meta)

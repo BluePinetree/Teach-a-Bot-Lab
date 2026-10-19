@@ -1,10 +1,16 @@
 """Teach-a-Bot Lab on ALOHA 2 (MuJoCo) — S1 "정리하기" teleoperation.
 
     .venv\\Scripts\\python.exe -m teachabot.aloha_app [--input keyboard] [--check] [--screenshot PATH]
+    .venv\\Scripts\\python.exe -m teachabot.aloha_app --record s01                  # record demonstrations
+    .venv\\Scripts\\python.exe -m teachabot.aloha_app --policy P.npz [--record t01]  # AI drives, people take over
 
 Window: MuJoCo renders offscreen, the Korean HUD is drawn with PIL (system Malgun Gothic,
-used in place) and shown with OpenCV. Keys: R = new episode, Esc = quit.
-Joy-Con: capture (L) / home (R) = new episode, - / + = re-zero that hand's wrist.
+used in place) and shown with OpenCV. Keys: R = new episode, Esc = quit, T = retrain (AI mode).
+Joy-Con: capture (L) / home (R) = new episode, - / + = re-zero that hand's wrist, X (R) = retrain.
+
+Takeover (AI mode): moving a hand's stick or pressing its grip/shoulder hands that arm to the
+person for the rest of the episode; only the person's part is saved for learning
+(DAgger-inspired correction data, not a full DAgger implementation).
 """
 from __future__ import annotations
 
@@ -29,6 +35,7 @@ from teachabot.input.motion import MotionCalibration
 from teachabot.input.replay import InputRecorder
 from teachabot.learning.bc import NumpyPolicy
 from teachabot.learning.demos import DemoWriter
+from teachabot.learning.live import LiveTrainer
 
 ROOT = Path(__file__).resolve().parents[2]
 FONT_PATH = Path("C:/Windows/Fonts/malgun.ttf")
@@ -40,9 +47,15 @@ HAND_KO = {"left": "왼손", "right": "오른손"}
 CUBE_KO = {"left": "파란", "right": "주황"}
 HAND_RGB = {"left": (70, 130, 245), "right": (255, 150, 40)}
 WINDOW = "Teach-a-Bot Lab - ALOHA"
+PRACTICE_SEED_BASE = 3_000_000   # AI-mode layouts: unseen in training, separate from the test layouts
+TAKEOVER_STICK = 0.35            # stick deflection that hands an arm to the person
+VIDEO_FPS = 30
 
 
-def make_provider(kind: str) -> InputProvider:
+def make_provider(kind: str, replay: Path | None = None) -> InputProvider:
+    if kind == "replay":                       # recorded input (tests)
+        from teachabot.input.replay import ReplayInputProvider
+        return ReplayInputProvider(replay, realtime=True)
     if kind == "joycon":
         from teachabot.input.joycon import JoyConInputProvider
         return JoyConInputProvider()
@@ -102,7 +115,9 @@ class Hud:
 
     def draw(self, rgb: np.ndarray, env: AlohaSortEnv, info, frame: InputFrame | None, mapper: TeleopMapper,
              source: str, episode: int, result: str | None, check: S1Check | None, fps: float,
-             panel: tuple[str, list[tuple[str, tuple]]] | None = None, mode_line: str | None = None) -> np.ndarray:
+             panel: tuple[str, list[tuple[str, tuple]]] | None = None, mode_line: str | None = None,
+             controllers: dict | None = None, history: list[dict] | None = None,
+             guide_text: str | None = None) -> np.ndarray:
         img = Image.fromarray(rgb).convert("RGBA")
         over = Image.new("RGBA", img.size, (0, 0, 0, 0))
         d = ImageDraw.Draw(over)
@@ -127,11 +142,19 @@ class Hud:
             conn = hand is not None and hand.connected
             tg = env.targets[h]
             d.text((x0 + 14, y0 + 6), f"{HAND_KO[h]} ({CUBE_KO[h]})", font=self.f, fill=HAND_RGB[h])
-            status = "연결 안 됨" if not conn else ("집는 중" if tg.grip else "열림")
-            if conn and info.in_tray[h]:
+            if controllers:
+                who = controllers[h]
+                tag, col = ("AI", (120, 200, 255)) if who == "ai" else ("사람이 넘겨받음", (255, 190, 90))
+                tw = d.textlength(tag, font=self.f_small) + 16
+                d.rounded_rectangle((x0 + 304 - tw, y0 - 30, x0 + 320, y0 - 4), radius=8, fill=(15, 20, 30, 200))
+                d.text((x0 + 312 - tw, y0 - 28), tag, font=self.f_small, fill=col)
+            ai_hand = bool(controllers) and controllers[h] == "ai"
+            ok = conn or ai_hand                   # an AI-driven arm does not need its Joy-Con
+            status = "연결 안 됨" if not ok else ("집는 중" if tg.grip else "열림")
+            if ok and info.in_tray[h]:
                 status += " · 상자 안!"
-            d.text((x0 + 150, y0 + 8), status, font=self.f_small, fill=(255, 255, 255) if conn else (255, 120, 120))
-            if mapper.wrist_ready(h):
+            d.text((x0 + 150, y0 + 8), status, font=self.f_small, fill=(255, 255, 255) if ok else (255, 120, 120))
+            if ai_hand or mapper.wrist_ready(h):
                 wrist = f"손목  기울기 {np.rad2deg(tg.pitch):+4.0f}°   회전 {np.rad2deg(tg.twist):+4.0f}°"
             else:
                 wrist = "손목  고정 (기울기 보정 없음)"
@@ -143,6 +166,11 @@ class Hud:
                  "  ·  -/+: 손목 영점  ·  캡처/홈: 새 판")
         if source == "keyboard":
             guide = "WASD/방향키: 이동 · E/오른Shift: 내리기 · Q/오른Ctrl: 집기 · Space: 시작 · R: 새 판 · Esc: 종료"
+        if guide_text:
+            guide = guide_text
+        elif controllers:
+            guide = ("AI가 멈추면 그 손의 스틱이나 버튼을 움직여 넘겨받기  ·  A: 시작  ·  캡처/홈: 새 판"
+                     "  ·  X(오른쪽) 또는 T: 모은 데이터로 다시 학습")
         d.text((32, H - 52), guide, font=self.f_small, fill=(235, 238, 245))
 
         if check is not None:
@@ -162,6 +190,8 @@ class Hud:
             sub = "캡처/홈 버튼(또는 R)으로 새 판"
             sw = d.textlength(sub, font=self.f)
             d.text(((W - sw) / 2, 362), sub, font=self.f, fill=(255, 255, 255))
+        if history:
+            self._draw_history(d, history)
         if panel:
             title, lines = panel
             pw = max([d.textlength(title, font=self.f_title)] + [d.textlength(t, font=self.f) for t, _ in lines]) + 60
@@ -174,11 +204,30 @@ class Hud:
         return np.asarray(Image.alpha_composite(img, over).convert("RGB"))
 
 
+    def _draw_history(self, d: ImageDraw.ImageDraw, history: list[dict]) -> None:
+        """Success rate per training round (measured on held-out layouts)."""
+        rows = history[-5:]
+        x0, y0, bw = 16, 112, 330
+        self._box(d, (x0, y0, x0 + bw, y0 + 40 + 34 * len(rows)))
+        d.text((x0 + 12, y0 + 6), "AI 실력 (처음 보는 배치에서 시험)", font=self.f_small, fill=(255, 255, 255))
+        for j, r in enumerate(rows):
+            yy = y0 + 38 + 34 * j
+            rate = float(r["success_rate"])
+            d.text((x0 + 12, yy), r["label"], font=self.f_tiny, fill=(225, 228, 236))
+            bx = x0 + 128
+            d.rectangle((bx, yy + 2, bx + 120, yy + 20), fill=(60, 66, 80, 220))
+            d.rectangle((bx, yy + 2, bx + int(120 * rate), yy + 20), fill=(120, 230, 140, 255))
+            d.text((bx + 128, yy), f"{rate * 100:3.0f}%  큐브 {r['cubes_mean']:.2f}", font=self.f_tiny,
+                   fill=(225, 228, 236))
+
+
 def start_panel(state: str, connected: dict, source: str, ai: bool = False):
     if state not in ("waiting", "paused"):
         return None
     if ai:
-        return "AI 차례", [("A 버튼(또는 스페이스바)을 누르면 AI가 혼자 해 봅니다", (240, 242, 248))]
+        return "AI 차례", [("A 버튼(또는 스페이스바)을 누르면 AI가 혼자 해 봅니다", (240, 242, 248)),
+                           ("AI가 멈추면 그 손의 스틱이나 버튼을 움직여 넘겨받아 마무리해 주세요", (255, 210, 120)),
+                           ("넘겨받은 부분만 AI의 새 공부 자료로 저장됩니다", (200, 205, 215))]
     ok, bad, white = (120, 230, 140), (255, 130, 110), (240, 242, 248)
     lines = []
     if source != "keyboard":
@@ -197,9 +246,31 @@ def start_panel(state: str, connected: dict, source: str, ai: bool = False):
     return ("시작 준비" if state == "waiting" else "일시정지: 조이콘 연결 끊김"), lines
 
 
+def train_panel(trainer: LiveTrainer):
+    white, dim = (240, 242, 248), (200, 205, 215)
+    el = time.perf_counter() - trainer.t_started
+    if trainer.state == "training":
+        return "AI가 다시 공부하는 중…", [(trainer.message, white), (f"{el:4.0f}초", dim)]
+    if trainer.state == "evaluating":
+        return "AI 시험 보는 중…", [(trainer.message, white), (f"{el:4.0f}초", dim)]
+    if trainer.state == "error":
+        return "다시 학습 실패", [(trainer.message[:60], (255, 130, 110)), ("이전 AI로 계속합니다", dim)]
+    r = trainer.result or {}
+    prev = trainer.history[-2] if len(trainer.history) >= 2 else None
+    lines = [(f"새 AI ({r.get('label', '')}): 성공 {r.get('success_rate', 0) * 100:.0f}% · "
+              f"판당 큐브 {r.get('cubes_mean', 0):.2f}개", (120, 230, 140))]
+    if prev:
+        lines.append((f"이전 AI ({prev['label']}): 성공 {prev['success_rate'] * 100:.0f}% · "
+                      f"판당 큐브 {prev['cubes_mean']:.2f}개", dim))
+    lines.append(("A 버튼을 누르면 새 AI가 해 봅니다", white))
+    return f"다시 배운 AI의 시험 결과 ({r.get('episodes', '?')}판, {el:.0f}초 걸림)", lines
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--input", choices=("joycon", "keyboard"), default="joycon")
+    ap.add_argument("--input", choices=("joycon", "keyboard", "replay"), default="joycon")
+    ap.add_argument("--replay", type=Path, help="input recording for --input replay")
+    ap.add_argument("--time-limit", type=float, default=40.0)
     ap.add_argument("--move", choices=MOVE_SOURCES, default="stick", help="movement source (D9)")
     ap.add_argument("--wrist", choices=("imu", "off"), default="imu")
     ap.add_argument("--seed", type=int, default=0)
@@ -209,15 +280,19 @@ def main() -> None:
     ap.add_argument("--record", metavar="SESSION", help="save each episode as a demonstration (anonymous code, e.g. s01)")
     ap.add_argument("--policy", type=Path, help="let a trained policy (.npz) drive instead of the Joy-Cons")
     ap.add_argument("--autostart", action="store_true", help="start the first episode without a button (smoke tests)")
+    ap.add_argument("--video", type=Path, help="also write what the window shows to this .mp4 (30 fps)")
+    ap.add_argument("--eval-episodes", type=int, default=40, help="layouts used to test a retrained AI")
     args = ap.parse_args()
 
-    env = AlohaSortEnv()
+    env = AlohaSortEnv(time_limit=args.time_limit)
     mapper = TeleopMapper(TeleopSettings(move_source=args.move, wrist_source=args.wrist),
                           MotionCalibration.load(MOTION_CAL_PATH))
     renderer = mujoco.Renderer(env.model, H, W)
     hud = Hud()
     check = S1Check() if args.check else None
     seed, episode = args.seed, 1
+    if args.policy and args.seed == 0:
+        seed = PRACTICE_SEED_BASE
     env.reset(seed)
     info = env.info()
 
@@ -233,9 +308,22 @@ def main() -> None:
         return
 
     policy = NumpyPolicy.load(args.policy) if args.policy else None
-    provider = make_provider(args.input)
+    provider = make_provider(args.input, args.replay)
     provider.connect()
-    writer = DemoWriter(args.record, provider.source) if args.record and not policy else None
+    # AI mode always saves takeover episodes (session "live" unless --record names one)
+    writer = DemoWriter(args.record or "live", provider.source) if (args.record or policy) else None
+    controllers = {h: "ai" if policy else "human" for h in HANDS}
+    takeover_t: dict = {}
+    trainer = LiveTrainer(episodes=args.eval_episodes) if policy else None
+    if trainer:
+        trainer.add_baseline(args.policy)
+    policy_path = args.policy
+    retrains: list[dict] = []
+    video = None
+    if args.video:
+        args.video.parent.mkdir(parents=True, exist_ok=True)
+        video = cv2.VideoWriter(str(args.video), cv2.VideoWriter_fourcc(*"mp4v"), VIDEO_FPS, (W, H))
+    next_video_t = 0.0
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     recorder = InputRecorder(LOG_DIR / f"aloha_s1_input_{stamp}.jsonl", provider.source,
@@ -254,6 +342,9 @@ def main() -> None:
         nonlocal seed, episode, result, info, acc, state
         if writer:
             writer.start()          # an unfinished episode is discarded
+        for h in HANDS:
+            controllers[h] = "ai" if policy else "human"
+        takeover_t.clear()
         acc = 0.0
         state = "waiting"
         seed += 1
@@ -264,13 +355,18 @@ def main() -> None:
 
     def mode_line() -> str | None:
         if policy is not None:
-            n = policy.meta.get("n_demos")
-            return f"AI가 조종 중 (시범 {n}개로 배움)" if n else "AI가 조종 중"
+            n, t = policy.meta.get("n_demos"), policy.meta.get("n_takeovers", 0)
+            learned = f"시범 {n}개" + (f" + 개입 {t}번" if t else "")
+            line = f"AI가 조종 중 ({learned}으로 배움)" if n is not None else "AI가 조종 중"
+            if writer and writer.saved:
+                line += f" · 새 개입 {writer.saved}번 저장"
+            return line
         if writer:
             return f"시범 기록 중 · 저장 {writer.saved}개 (성공 {writer.saved_success}개)"
         return None
 
     key_start = bool(args.autostart)
+    key_train = False
     t_run = time.perf_counter()
     t_prev, acc = t_run, 0.0
     try:
@@ -293,13 +389,26 @@ def main() -> None:
             if pressed["left"].get("capture") or pressed["right"].get("home"):
                 new_episode()
                 continue
+            if trainer and (pressed["right"].get("x") or key_train) and state in ("waiting", "finished"):
+                trainer.start()
+            key_train = False
+            if trainer and trainer.state == "done" and trainer.result and \
+                    trainer.result["policy"] != str(policy_path):
+                policy_path = Path(trainer.result["policy"])
+                policy = NumpyPolicy.load(policy_path)          # the next episode uses the new AI
+                retrains.append(trainer.result)
+                print("retrained", trainer.result, flush=True)
 
             # Start gate: nothing moves until both hands are connected and A (Space) is pressed.
             connected = {h: frame.hand(h).connected for h in HANDS}
             start = pressed["right"].get("a", False) or key_start
             key_start = False
             ready = all(connected.values()) or policy is not None
+            if trainer and trainer.busy():
+                start = False                      # no new episode while the AI is studying
             if state == "waiting" and ready and start:
+                if trainer and trainer.state in ("done", "error"):
+                    trainer.state = "idle"             # the result panel has been seen
                 for h in HANDS:                    # the grip held at start becomes the wrist neutral
                     mapper.recenter(h, frame.hand(h).accel)
                 if writer:
@@ -318,9 +427,23 @@ def main() -> None:
                 acc -= CONTROL_DT
                 n_steps += 1
                 obs = env.observation()
-                cmds = action_to_commands(policy(obs)) if policy else mapper.commands(frame, CONTROL_DT)
+                human_cmds = mapper.commands(frame, CONTROL_DT)
+                if policy is not None:
+                    for h in HANDS:                # takeover: the person grabs this arm for the rest of the episode
+                        hand = frame.hand(h)
+                        if controllers[h] == "ai" and hand.connected and (
+                                float(np.hypot(*hand.stick)) > TAKEOVER_STICK
+                                or hand.buttons["grip"] or hand.buttons["shoulder"]):
+                            controllers[h] = "human"
+                            takeover_t[h] = round(env.t, 2)
+                            mapper.recenter(h, hand.accel)
+                            print(f"takeover {h} at {env.t:.2f}s", flush=True)
+                    ai_cmds = action_to_commands(policy(obs))
+                    cmds = {h: human_cmds[h] if controllers[h] == "human" else ai_cmds[h] for h in HANDS}
+                else:
+                    cmds = human_cmds
                 if writer:
-                    writer.add(obs, commands_to_action(cmds))
+                    writer.add(obs, commands_to_action(cmds), tuple(controllers[h] == "human" for h in HANDS))
                 _, info = env.step(cmds)
                 if check:
                     check.update(env, info)
@@ -334,16 +457,31 @@ def main() -> None:
                     result = "실패: 큐브가 떨어졌어요" if fell else "실패: 시간 초과"
                 state = "finished"
                 if writer:
-                    saved = writer.finish(seed, info.success, info.time)
+                    saved = writer.finish(seed, info.success, info.time, in_tray=info.in_tray,
+                                          kind="takeover" if policy is not None else "demo",
+                                          extra={"takeover_t": dict(takeover_t),
+                                                 "policy": str(policy_path) if policy is not None else None})
                     print("demo saved", saved.name if saved else None, flush=True)
                 episodes.append({"episode": episode, "seed": seed, "success": info.success,
-                                 "time": round(info.time, 2), "in_tray": {k: bool(v) for k, v in info.in_tray.items()}})
+                                 "time": round(info.time, 2), "in_tray": {k: bool(v) for k, v in info.in_tray.items()},
+                                 "takeover": dict(takeover_t) if policy is not None else None,
+                                 "policy": policy_path.name if policy is not None else None})
                 print("episode", episodes[-1], flush=True)
 
             renderer.update_scene(env.data, camera="demo_cam")
-            out = hud.draw(renderer.render(), env, info, frame, mapper, provider.source, episode, result, check, fps,
-                           panel=start_panel(state, connected, provider.source, ai=policy is not None),
-                           mode_line=mode_line())
+            panel = start_panel(state, connected, provider.source, ai=policy is not None)
+            if trainer and trainer.state != "idle" and state in ("waiting", "finished"):
+                panel = train_panel(trainer)
+            out = hud.draw(renderer.render(), env, info, frame, mapper, provider.source, episode,
+                           None if (panel and trainer and trainer.state != "idle") else result, check, fps,
+                           panel=panel, mode_line=mode_line(),
+                           controllers=dict(controllers) if policy is not None else None,
+                           history=trainer.history if trainer else None)
+            if video is not None:
+                now_v = time.perf_counter() - t_run
+                while next_video_t <= now_v:
+                    video.write(cv2.cvtColor(out, cv2.COLOR_RGB2BGR))
+                    next_video_t += 1.0 / VIDEO_FPS
             cv2.imshow(WINDOW, cv2.cvtColor(out, cv2.COLOR_RGB2BGR))
             key = cv2.waitKey(1) & 0xFF
             if key == 27 or cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
@@ -352,6 +490,8 @@ def main() -> None:
                 new_episode()
             if key == 32:
                 key_start = True
+            if key in (ord("t"), ord("T")):
+                key_train = True
             spent = time.perf_counter() - t_start
             if spent < CONTROL_DT:
                 time.sleep(CONTROL_DT - spent)
@@ -362,6 +502,8 @@ def main() -> None:
     finally:
         recorder.close()
         provider.disconnect()
+        if video is not None:
+            video.release()
         cv2.destroyAllWindows()
         summary = {"created": stamp, "input": provider.source, "move": args.move, "wrist": args.wrist,
                    "episodes": episodes, "frames": len(frame_ms),
@@ -372,7 +514,8 @@ def main() -> None:
                    "check_complete": check.complete if check else None,
                    "input_log": recorder.path.name, "record_session": args.record,
                    "demos_saved": writer.saved if writer else None,
-                   "policy": str(args.policy) if args.policy else None}
+                   "policy": str(args.policy) if args.policy else None,
+                   "retrains": retrains, "video": str(args.video) if args.video else None}
         path = LOG_DIR / f"aloha_s1_{'check' if check else 'run'}_{stamp}.json"
         path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
         print("summary", path)
