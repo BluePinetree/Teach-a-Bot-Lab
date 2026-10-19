@@ -179,6 +179,28 @@ class JoyConDevice:
             latest = self._latest
         return latest is not None and time.perf_counter() - latest.t < self.STALE_AFTER_S
 
+    def send_keepalive(self, kind: str = "rumble") -> bool:
+        """Write something harmless to the Joy-Con (Phase 0 experiment).
+
+        kind "rumble": rumble-only report 0x10 with neutral data. Measured
+            2026-10-19: does NOT stop the ~15 min sleep.
+        kind "lamp": subcommand 0x30, player lamp 1 on (what a Switch sends
+            after connecting).
+        See docs/JOYCON_LINK_MANAGER_PLAN.md section 9.
+        """
+        with self._lock:
+            joycon = self._joycon
+        if joycon is None:
+            return False
+        try:
+            if kind == "lamp":
+                joycon.set_player_lamp_on(0x1)
+            else:
+                joycon._write_output_report(b"\x10", b"", b"")
+            return True
+        except (OSError, ValueError):
+            return False
+
     def awaiting_first_report(self) -> bool:
         with self._lock:
             return self._joycon is not None and self._latest is None

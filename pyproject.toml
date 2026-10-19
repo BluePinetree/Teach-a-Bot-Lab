@@ -17,6 +17,11 @@ dependencies = [
     "gymnasium==1.4.0",
     "stable-baselines3==2.9.0",
     "torch==2.14.1",
+    "winrt-runtime==3.2.1",
+    "winrt-Windows.Foundation==3.2.1",
+    "winrt-Windows.Foundation.Collections==3.2.1",
+    "winrt-Windows.Devices.Bluetooth==3.2.1",
+    "winrt-Windows.Devices.Enumeration==3.2.1",
 ]
 
 [project.optional-dependencies]
