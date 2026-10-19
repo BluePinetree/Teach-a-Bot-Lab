@@ -50,8 +50,31 @@ HAND_RGB = {"left": (70, 130, 245), "right": (255, 150, 40)}
 WINDOW = "Teach-a-Bot Lab - ALOHA"
 PRACTICE_SEED_BASE = 3_000_000   # AI-mode layouts: unseen in training, separate from the test layouts
 TAKEOVER_STICK = 0.35            # stick deflection that hands an arm to the person
+STALL_S, STALL_M = 1.5, 0.01     # an AI arm whose target moves < 1 cm in 1.5 s (sim) is "stuck"
 VIDEO_FPS = 30
 VISIT_REFERENCE = ROOT / "config" / "visit_reference.json"
+
+
+class _NeutralProvider(InputProvider):
+    """--test-autopilot input: both hands connected, nothing pressed (the real keyboard is not read,
+    so typing elsewhere cannot take an arm over during a smoke test)."""
+    source = "test"
+
+    def __init__(self):
+        self._seq = 0
+
+    def connect(self) -> None:
+        pass
+
+    def disconnect(self) -> None:
+        pass
+
+    def poll(self) -> InputFrame:
+        from teachabot.input.base import BUTTONS, HandInput
+        self._seq += 1
+        hand = {h: HandInput(True, (0.0, 0.0), {b: False for b in BUTTONS[h]}, accel=(0.0, 0.0, 1.0),
+                             gyro=(0.0, 0.0, 0.0)) for h in HANDS}
+        return InputFrame(time.perf_counter(), self._seq, self.source, hand["left"], hand["right"])
 
 
 def make_provider(kind: str, replay: Path | None = None) -> InputProvider:
@@ -120,7 +143,7 @@ class Hud:
              panel: tuple[str, list[tuple[str, tuple]]] | None = None, mode_line: str | None = None,
              controllers: dict | None = None, history: list[dict] | None = None,
              guide_text: str | None = None, notice: str | None = None,
-             steps: tuple[list, str] | None = None) -> np.ndarray:
+             steps: tuple[list, str] | None = None, alert_hand: str | None = None) -> np.ndarray:
         img = Image.fromarray(rgb).convert("RGBA")
         over = Image.new("RGBA", img.size, (0, 0, 0, 0))
         d = ImageDraw.Draw(over)
@@ -141,6 +164,8 @@ class Hud:
         for i, h in enumerate(HANDS):
             x0 = 16 if h == "left" else W - 336
             self._box(d, (x0, y0, x0 + 320, y0 + 92))
+            if alert_hand == h and int(time.perf_counter() * 3) % 2 == 0:     # blink
+                d.rounded_rectangle((x0 - 4, y0 - 4, x0 + 324, y0 + 96), radius=12, outline=(255, 200, 60), width=5)
             hand = frame.hand(h) if frame else None
             conn = hand is not None and hand.connected
             tg = env.targets[h]
@@ -272,6 +297,13 @@ def start_panel(state: str, connected: dict, source: str, ai: bool = False):
     return ("시작 준비" if state == "waiting" else "일시정지: 조이콘 연결 끊김"), lines
 
 
+def stall_panel(hand: str):
+    return "AI가 멈췄어요", [(f"{HAND_KO[hand]}이 멈췄어요! 그 손의 스틱이나 버튼을 움직여 넘겨받아 주세요",
+                             (255, 210, 120)),
+                            ("넘겨받으면 사람이 이어서 조종하고, 그 부분이 AI의 새 공부 자료가 돼요", (200, 205, 215)),
+                            ("A: AI에게 계속 맡기기", (240, 242, 248))]
+
+
 def result_panel(group: str, history: list[dict], reference: list[dict]):
     white, dim, good = (240, 242, 248), (200, 205, 215), (120, 230, 140)
     lines = []
@@ -327,6 +359,10 @@ def main() -> None:
     ap.add_argument("--visit", metavar="GROUP", help="visit mode for one group (e.g. 1조): demos -> study -> AI -> fix -> study")
     ap.add_argument("--visit-demos", type=int, default=3, help="visit: successful demos to aim for before studying")
     ap.add_argument("--visit-base", nargs="*", default=[], help="visit: also learn from these sessions (e.g. s01 t01)")
+    ap.add_argument("--ai-speed", type=float, default=0.5,
+                    help="AI rounds play at this fraction of real time (same decisions, slower to watch); "
+                         "back to 1x once a person takes an arm over")
+    ap.add_argument("--visit-no-practice", action="store_true", help="visit: skip the ⓪ practice step")
     ap.add_argument("--test-autopilot", action="store_true",
                     help="SMOKE TEST ONLY: a scripted controller plays the people's part and presses the keys, "
                          "to run the whole visit flow end to end (use a session code starting with _)")
@@ -356,7 +392,7 @@ def main() -> None:
         return
 
     policy = NumpyPolicy.load(args.policy) if args.policy else None
-    provider = make_provider(args.input, args.replay)
+    provider = _NeutralProvider() if args.test_autopilot else make_provider(args.input, args.replay)
     provider.connect()
     # AI mode always saves takeover episodes (session "live" unless --record names one)
     writer = DemoWriter(args.record or "live", provider.source) if (args.record or policy) else None
@@ -365,7 +401,8 @@ def main() -> None:
     trainer = LiveTrainer(episodes=args.eval_episodes) if policy else None
     if trainer:
         trainer.add_baseline(args.policy)
-    flow = VisitFlow(args.visit, args.visit_demos, tuple(args.visit_base)) if args.visit else None
+    flow = VisitFlow(args.visit, args.visit_demos, tuple(args.visit_base),
+                     practice=not args.visit_no_practice) if args.visit else None
     autopilot = None
     if args.test_autopilot:
         if not (flow and args.visit.startswith("_")):
@@ -393,8 +430,20 @@ def main() -> None:
                              meta={"app": "aloha_app", "move": args.move, "wrist": args.wrist})
     episodes: list[dict] = []
     frame_ms: list[float] = []
-    cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(WINDOW, W, H)
+    headless = autopilot is not None          # smoke tests never pop a window on the user's screen
+    if not headless:
+        cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(WINDOW, W, H)
+    stall = {"hand": None, "anchor": {}, "off": set(), "events": []}
+
+    def apply_time_limit():
+        env.time_limit = 1e9 if (flow and flow.step == "practice") else args.time_limit
+
+    def reset_stall():
+        stall.update(hand=None, anchor={h: (env.targets[h].pos.copy(), env.t) for h in HANDS}, off=set(), events=[])
+
+    apply_time_limit()
+    reset_stall()
     prev_buttons: dict = {}
     result: str | None = None
     state = "waiting"          # waiting -> running <-> paused -> finished
@@ -413,16 +462,24 @@ def main() -> None:
         seed += 1
         episode += 1
         result = None
+        apply_time_limit()
         env.reset(seed)
         info = env.info()
+        reset_stall()
+        if flow:
+            flow.reset_practice()             # in ⓪ practice: next student, fresh checklist
 
     def mode_line() -> str | None:
+        if flow and flow.step == "practice":
+            return f"{flow.group} 연습 중 (저장 안 함)"
         if flow and policy is None:
             return f"{flow.group} 시범 기록 중 · 성공 {flow.demos_ok}판"
         if policy is not None:
             n, t = policy.meta.get("n_demos"), policy.meta.get("n_takeovers", 0)
             learned = f"시범 {n}개" + (f" + 개입 {t}번" if t else "")
             line = f"AI가 조종 중 ({learned}으로 배움)" if n is not None else "AI가 조종 중"
+            if all(c == "ai" for c in controllers.values()) and args.ai_speed != 1.0:
+                line += f" · {args.ai_speed:g}배속"
             if writer and writer.saved:
                 line += f" · 새 개입 {writer.saved}번 저장"
             return line
@@ -461,8 +518,11 @@ def main() -> None:
                 if flow is None or flow.start_training():
                     trainer.start()
             if flow and key_next and state in ("waiting", "finished") and not trainer.busy():
-                if flow.next() == "train":
+                went = flow.next()
+                if went == "train":
                     trainer.start()
+                elif went == "demo":
+                    new_episode()                      # practice over: fresh layout, recording on
             key_train = key_next = False
             if flow and trainer.state == "error" and flow.step in ("train", "retrain"):
                 flow.on_trained(False)
@@ -479,7 +539,9 @@ def main() -> None:
                     new_episode()                        # fresh layout, arms handed to the AI
 
             if autopilot:                              # test: press the keys a person would press
-                if state == "finished":
+                if flow.step == "practice":
+                    key_next = True
+                elif state == "finished":
                     if flow.step == "demo" and flow.demos_ok >= flow.target_demos:
                         key_train = True
                     elif flow.step == "ai" and flow.takeovers >= 1 and flow.trainings < 2:
@@ -496,6 +558,22 @@ def main() -> None:
                     result_shown_at = result_shown_at or t_start
                     if t_start - result_shown_at > 3.0:
                         break
+            if policy is not None and state in ("running", "stalled"):
+                for h in HANDS:                    # takeover: the person grabs this arm for the rest of the episode
+                    hand = frame.hand(h)
+                    wants = hand.connected and (float(np.hypot(*hand.stick)) > TAKEOVER_STICK
+                                                or hand.buttons["grip"] or hand.buttons["shoulder"])
+                    if autopilot and (stall["hand"] == h or (h == "right" and env.t > 2.0)):
+                        wants = True                   # test: take the stuck arm / the right arm after 2 s
+                    if controllers[h] == "ai" and wants:
+                        controllers[h] = "human"
+                        takeover_t[h] = round(env.t, 2)
+                        mapper.recenter(h, hand.accel)
+                        print(f"takeover {h} at {env.t:.2f}s", flush=True)
+                        if stall["hand"] == h:
+                            stall["events"][-1]["resolved"] = "takeover"
+                            stall["hand"] = None
+                            state, acc = "running", 0.0
             # Start gate: nothing moves until both hands are connected and A (Space) is pressed.
             connected = {h: frame.hand(h).connected for h in HANDS}
             start = pressed["right"].get("a", False) or key_start
@@ -517,9 +595,17 @@ def main() -> None:
                 state = "paused"
             elif state == "paused" and ready and start:
                 state, acc = "running", 0.0
+            elif state == "stalled" and start:            # A: let the AI keep this arm
+                h = stall["hand"]
+                stall["off"].add(h)
+                stall["events"][-1]["resolved"] = "ai_continue"
+                stall["hand"] = None
+                state, acc = "running", 0.0
 
             # Advance physics by real elapsed time (rendering runs ~35-45 fps; control is 50 Hz).
-            acc = min(acc + (t_start - t_prev), 3 * CONTROL_DT) if state == "running" else 0.0
+            # AI rounds run slower than real time (same decisions, easier to follow) until a person joins.
+            speed = args.ai_speed if (policy is not None and all(c == "ai" for c in controllers.values())) else 1.0
+            acc = min(acc + (t_start - t_prev) * speed, 3 * CONTROL_DT) if state == "running" else 0.0
             t_prev = t_start
             n_steps = 0
             while result is None and acc >= CONTROL_DT:
@@ -527,28 +613,42 @@ def main() -> None:
                 n_steps += 1
                 obs = env.observation()
                 human_cmds = autopilot.commands(env) if autopilot else mapper.commands(frame, CONTROL_DT)
-                if autopilot and policy is not None and env.t > 2.0 and controllers["right"] == "ai":
-                    controllers["right"] = "human"         # test: take the right arm over after 2 s
-                    takeover_t["right"] = round(env.t, 2)
                 if policy is not None:
-                    for h in HANDS:                # takeover: the person grabs this arm for the rest of the episode
-                        hand = frame.hand(h)
-                        if controllers[h] == "ai" and hand.connected and (
-                                float(np.hypot(*hand.stick)) > TAKEOVER_STICK
-                                or hand.buttons["grip"] or hand.buttons["shoulder"]):
-                            controllers[h] = "human"
-                            takeover_t[h] = round(env.t, 2)
-                            mapper.recenter(h, hand.accel)
-                            print(f"takeover {h} at {env.t:.2f}s", flush=True)
                     ai_cmds = action_to_commands(policy(obs))
                     cmds = {h: human_cmds[h] if controllers[h] == "human" else ai_cmds[h] for h in HANDS}
                 else:
                     cmds = human_cmds
-                if writer:
+                if writer and (flow is None or flow.recording):
                     writer.add(obs, commands_to_action(cmds), tuple(controllers[h] == "human" for h in HANDS))
                 _, info = env.step(cmds)
                 if check:
                     check.update(env, info)
+                if flow and flow.step == "practice":
+                    for h in HANDS:
+                        tg = env.targets[h]
+                        if np.linalg.norm(tg.pos[:2] - stall["anchor"][h][0][:2]) > 0.05:
+                            flow.mark_practice("move")
+                        if tg.pos[2] < 0.06:
+                            flow.mark_practice("lower")
+                        if tg.grip and env.cube_pos(h)[2] > CUBE_HALF + 0.04:
+                            flow.mark_practice("lift")
+                        if abs(tg.pitch) > np.deg2rad(15) or abs(tg.twist) > np.deg2rad(20):
+                            flow.mark_practice("wrist")
+                if policy is not None and not info.done:        # an AI arm that stopped moving: ask for help
+                    for h in HANDS:
+                        if controllers[h] != "ai" or h in stall["off"] or info.in_tray[h]:
+                            continue
+                        p0, t0 = stall["anchor"][h]
+                        if np.linalg.norm(env.targets[h].pos - p0) > STALL_M:
+                            stall["anchor"][h] = (env.targets[h].pos.copy(), env.t)
+                        elif env.t - t0 > STALL_S:
+                            stall["hand"] = h
+                            stall["events"].append({"hand": h, "t": round(env.t, 2), "resolved": None})
+                            print(f"stall {h} at {env.t:.2f}s", flush=True)
+                            break
+                    if stall["hand"]:
+                        state = "stalled"
+                        break
                 if info.done:
                     break
             if result is None and info.done:
@@ -558,7 +658,9 @@ def main() -> None:
                     fell = any(env.cube_pos(h)[2] < -0.05 for h in HANDS)
                     result = "실패: 큐브가 떨어졌어요" if fell else "실패: 시간 초과"
                 state = "finished"
-                if writer:
+                if writer and flow and not flow.recording:
+                    writer.start()                     # ⓪ practice: nothing is saved
+                elif writer:
                     saved = writer.finish(seed, info.success, info.time, in_tray=info.in_tray,
                                           kind="takeover" if policy is not None else "demo",
                                           extra={"takeover_t": dict(takeover_t),
@@ -569,7 +671,9 @@ def main() -> None:
                 episodes.append({"episode": episode, "seed": seed, "success": info.success,
                                  "time": round(info.time, 2), "in_tray": {k: bool(v) for k, v in info.in_tray.items()},
                                  "takeover": dict(takeover_t) if policy is not None else None,
-                                 "policy": policy_path.name if policy is not None else None})
+                                 "policy": policy_path.name if policy is not None else None,
+                                 "stalls": list(stall["events"]),
+                                 "step": flow.step if flow else None})
                 print("episode", episodes[-1], flush=True)
 
             renderer.update_scene(env.data, camera="demo_cam")
@@ -578,6 +682,8 @@ def main() -> None:
                 panel = train_panel(trainer)
             if flow and flow.step == "result":
                 panel = result_panel(flow.group, trainer.history, reference)
+            if state == "stalled" and stall["hand"]:
+                panel = stall_panel(stall["hand"])
             if t_start - notice_t >= 0.5:            # reads a small status file; twice a second is plenty
                 notice, notice_t = provider.status_line(), t_start
             out = hud.draw(renderer.render(), env, info, frame, mapper, provider.source, episode,
@@ -586,10 +692,12 @@ def main() -> None:
                            controllers=dict(controllers) if policy is not None else None,
                            history=trainer.history if (trainer and not (flow and flow.step == "result")) else None,
                            notice=notice,
-                           steps=(flow.banner(), flow.hint()) if flow else None)
+                           steps=(flow.banner(), flow.hint()) if flow else None,
+                           alert_hand=stall["hand"] if state == "stalled" else None)
             # record only while something happens (not the idle start screen), so a window left
             # open does not fill the disk; the video simply skips the waiting time
-            recording = state != "waiting" or (trainer is not None and trainer.state != "idle")                 or (flow is not None and flow.step == "result")
+            recording = (state != "waiting" or (trainer is not None and trainer.state != "idle")
+                         or (flow is not None and flow.step == "result"))
             if video is not None and not recording:
                 next_video_t = time.perf_counter() - t_run
             if video is not None and recording:
@@ -597,10 +705,12 @@ def main() -> None:
                 while next_video_t <= now_v:
                     video.write(cv2.cvtColor(out, cv2.COLOR_RGB2BGR))
                     next_video_t += 1.0 / VIDEO_FPS
-            cv2.imshow(WINDOW, cv2.cvtColor(out, cv2.COLOR_RGB2BGR))
-            key = cv2.waitKey(1) & 0xFF
-            if key == 27 or cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
-                break
+            key = 255
+            if not headless:
+                cv2.imshow(WINDOW, cv2.cvtColor(out, cv2.COLOR_RGB2BGR))
+                key = cv2.waitKey(1) & 0xFF
+                if key == 27 or cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
+                    break
             if key in (ord("r"), ord("R")):
                 new_episode()
             if key == 32:
@@ -621,7 +731,8 @@ def main() -> None:
         provider.disconnect()
         if video is not None:
             video.release()
-        cv2.destroyAllWindows()
+        if not headless:
+            cv2.destroyAllWindows()
         summary = {"created": stamp, "input": provider.source, "move": args.move, "wrist": args.wrist,
                    "episodes": episodes, "frames": len(frame_ms),
                    "wall_s": round(time.perf_counter() - t_run, 2), "sim_s_current_episode": round(env.t, 2),

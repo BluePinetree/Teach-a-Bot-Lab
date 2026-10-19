@@ -4,7 +4,7 @@ from teachabot.visit import STEP_LABEL, VisitFlow, load_reference
 
 
 def test_visit_flow_goes_demo_train_ai_retrain_result():
-    f = VisitFlow("1조", target_demos=2)
+    f = VisitFlow("1조", target_demos=2, practice=False)
     assert f.step == "demo" and not f.can_train() and f.next() is None    # nothing to learn yet
     f.on_episode_saved("demo", False)
     assert not f.can_train()                                             # failed demos are not learned
@@ -24,7 +24,7 @@ def test_visit_flow_goes_demo_train_ai_retrain_result():
 
 
 def test_failed_training_returns_to_previous_step():
-    f = VisitFlow("2조")
+    f = VisitFlow("2조", practice=False)
     f.on_episode_saved("demo", True)
     f.start_training()
     f.on_trained(False)
@@ -32,10 +32,11 @@ def test_failed_training_returns_to_previous_step():
 
 
 def test_banner_marks_current_step_and_sessions_include_base():
-    f = VisitFlow("3조", base_sessions=("s01",))
+    f = VisitFlow("3조", base_sessions=("s01",), practice=False)
     assert f.sessions() == ["s01", "3조"]
     states = dict(f.banner())
     assert states[STEP_LABEL["demo"]] == "current" and states[STEP_LABEL["result"]] == "todo"
+    assert STEP_LABEL["practice"] not in states
 
 
 def test_reference_lines_need_a_source(tmp_path):
@@ -59,3 +60,19 @@ def test_live_trainer_learns_only_listed_sessions(tmp_path):
     t = LiveTrainer(tmp_path, sessions=["1조"])
     assert t.data_counts() == (1, 0)
     assert LiveTrainer(tmp_path).data_counts() == (2, 0)
+
+
+def test_practice_comes_first_is_not_recorded_and_resets_per_student():
+    from teachabot.visit import PRACTICE_ITEMS
+    f = VisitFlow("4조")
+    assert f.step == "practice" and not f.recording and dict(f.banner())[STEP_LABEL["practice"]] == "current"
+    for k, _ in PRACTICE_ITEMS[:-1]:
+        f.mark_practice(k)
+    assert not f.practice_complete and "□" in f.hint()
+    f.mark_practice(PRACTICE_ITEMS[-1][0])
+    assert f.practice_complete and "준비 완료" in f.hint()
+    f.reset_practice()                                   # next student
+    assert not f.practice_done and f.practice_rounds == 1
+    assert f.next() == "demo" and f.step == "demo" and f.recording
+    f.mark_practice("move")                              # ignored outside practice
+    assert not f.practice_done
