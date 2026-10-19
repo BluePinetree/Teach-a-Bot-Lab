@@ -47,6 +47,8 @@ Python 3.12 (`.venv`, uv), joycon-python 0.2.4 + hidapi 0.15.0, numpy, pytest. *
 .venv\Scripts\python.exe scripts\compare_datasets.py --seeds 0 1 2 --episodes 100   # 시범만 vs 시범+개입, seed별 공정 비교
 .venv\Scripts\python.exe scripts\per_hand_stats.py data\policies\X.npz    # 손별 상자 안 / 들어 올림 / 멈춤
 .venv\Scripts\python.exe scripts\train_rl.py --reward sparse|dense       # 강화학습 기준선 (Ctrl-C로 중단해도 저장)
+.venv\Scripts\python.exe -m teachabot.aloha_app --visit 1조 --visit-demos 3 [--visit-base s01 t01] [--video V.mp4]   # 견학 모드 (docs/VISIT_RUNBOOK.md)
+.venv\Scripts\python.exe scripts\make_visit_reference.py                # 견학 결과 화면 참고 숫자 갱신 (측정 파일에서)
 ```
 학습 데이터·정책·강화학습 결과·영상은 `data/demos`, `data/policies`, `data/rl_runs`, `data/videos` (git 미추적). 배치 seed: 평가 1,000,000~ / 튜닝 2,000,000~ / AI 시연·개입 3,000,000~ (섞지 말 것). 강화학습 실행 중에도 앱 프레임은 ~25ms로 문제없음.
 ALOHA 앱은 두 조이콘이 연결되고 오른쪽 A(키보드 Space)를 눌러야 시작한다. Esc 또는 Ctrl-C로 끝내면 요약 JSON이 `data/logs`에 저장된다.
@@ -60,3 +62,4 @@ ALOHA 앱은 두 조이콘이 연결되고 오른쪽 A(키보드 Space)를 눌�
 - 성능 향상 연출, 시범 궤적을 AI 결과처럼 재생
 - 드라이버 설치·삭제, 보안 설정 변경, 시스템 Python 수정 (사용자 승인 없이)
 - 정식 DAgger 구현이라 주장
+- 견학에서 `--test-autopilot` 사용 (시험 전용, 세션 코드 `_`로 시작, 실행 후 데이터 삭제)
