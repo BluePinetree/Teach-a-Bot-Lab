@@ -213,6 +213,8 @@ class Hud:
                 wrist = "손목  고정 (기울기 보정 없음)"
             d.text((x0 + 14, y0 + 38), wrist, font=self.f_small, fill=(220, 225, 235))
             d.text((x0 + 14, y0 + 62), f"높이 {tg.pos[2] * 100:4.1f} cm", font=self.f_small, fill=(220, 225, 235))
+            if mapper.settings.height_source == "motion" and conn and hand.buttons["shoulder"] and not ai_hand:
+                d.text((x0 + 150, y0 + 62), "↕ 높이 조절 중", font=self.f_small, fill=(255, 225, 120))
             frac = (tg.pos[2] - 0.032) / (0.16 - 0.032)          # Z_MIN .. Z_CARRY
             bx = x0 + 296
             d.rectangle((bx, y0 + 34, bx + 12, y0 + 86), fill=(60, 66, 80, 220))
@@ -227,7 +229,7 @@ class Hud:
         guide = ("스틱: 이동  ·  L/R 누르고 있기: 내리기  ·  ZL/ZR 누르고 있기: 집기  ·  조이콘 기울이기: 손목"
                  "  ·  -/+: 손목 영점  ·  캡처/홈: 새 판")
         if mapper.settings.height_source == "motion":
-            guide = ("스틱: 이동  ·  조이콘을 위/아래로 움직이기: 높이 (멈추면 그 높이 유지)  ·  ZL/ZR 누르고 있기: 집기"
+            guide = ("스틱: 이동  ·  L/R 누른 채 조이콘을 위/아래로: 높이 (떼면 그 높이 유지)  ·  ZL/ZR 누르고 있기: 집기"
                      "  ·  캡처/홈: 새 판")
         if source == "keyboard":
             guide = "WASD/방향키: 이동 · E/오른Shift: 내리기 · Q/오른Ctrl: 집기 · Space: 시작 · R: 새 판 · Esc: 종료"
@@ -381,7 +383,8 @@ def main() -> None:
     ap.add_argument("--move", choices=MOVE_SOURCES, default="stick", help="movement source (D9)")
     ap.add_argument("--wrist", choices=("imu", "off"), help="default: imu (S1), off (S2: the tray needs no wrist)")
     ap.add_argument("--height", choices=("button", "motion"),
-                    help="button = hold L/R to lower; motion = move the Joy-Con up/down (default: S1 button, S2 motion)")
+                    help="button = hold L/R to lower; motion = hold L/R and move the Joy-Con up/down "
+                         "(default: S1 button, S2 motion)")
     ap.add_argument("--height-gain", type=float, default=1.0, help="motion: gripper speed per Joy-Con speed")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--check", action="store_true", help="noon checkpoint checklist")
