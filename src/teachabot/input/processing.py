@@ -233,14 +233,20 @@ class VerticalMotionEstimator:
     horizontal axes as G sin(tilt) (0.5 m/s^2 at 3 deg, the plan-A problem) but into the vertical
     one only as G (1 - cos(tilt)) (0.013 m/s^2 at 3 deg). The resting value absorbs the sensor's
     scale error (the right Joy-Con reads 1.09 G at rest).
+
+    Clutch (`active`): in play the hand is almost never still (S2 round 2026-10-20: rotation
+    median 6-11 deg/s, "moving" 40-57% of the time), so the zero-velocity resets rarely came and
+    strokes drifted until the time limit. With a clutch the speed is integrated only while the
+    button is held: released = speed 0 and the reference follows the hand closely, so every
+    press starts from a fresh reference and errors can only build up while the button is down.
     """
 
     G = 9.81
 
     def __init__(self, dt: float = 0.005, rest_s: float = 0.2, rest_force: float = 0.2,
                  rest_gyro_dps: float = 8.0, gravity_tau: float = 0.5, deadband: float = 0.02,
-                 max_move_s: float = 2.0, refractory_s: float = 0.4, warmup_s: float = 1.0,
-                 max_speed: float = 2.0):
+                 max_move_s: float = 1.2, refractory_s: float = 0.4, warmup_s: float = 1.0,
+                 max_speed: float = 1.5, idle_tau: float = 0.15):
         """Rest thresholds from the stroke logs' still windows: vertical force noise sigma
         ~0.07 m/s^2 (0.2 = ~3 sigma), gyro |w| p95 2-3 dps (8 dps margin). The IMU's first ~1 s after connecting is a
         transient (it read 14.9 m/s in a replay), so nothing is output until `warmup_s` has passed
@@ -254,6 +260,7 @@ class VerticalMotionEstimator:
         self.refractory_n = int(round(refractory_s / dt))  # just after a stroke, ignore the opposite direction
         self.warmup_n, self.max_speed = int(round(warmup_s / dt)), max_speed
         self._k_settle = min(1.0, dt / 0.05)
+        self._k_idle = min(1.0, dt / idle_tau)
         self.reset()
 
     def reset(self) -> None:
@@ -272,7 +279,8 @@ class VerticalMotionEstimator:
     def moving(self) -> bool:
         return self.still_count < self.rest_n
 
-    def update(self, accel_g, gyro_dps) -> float:
+    def update(self, accel_g, gyro_dps, active: bool = True) -> float:
+        """One IMU sample. active=False (clutch released): output 0, keep the reference current."""
         a = np.asarray(accel_g, float) * self.G
         n = float(np.linalg.norm(a))
         if self.g_hat is None:
@@ -291,6 +299,15 @@ class VerticalMotionEstimator:
             self.settle_count += 1
             if self.settle_count >= self.warmup_n and self.still_count >= self.rest_n:
                 self.settled, self.moving_count = True, 0
+            return 0.0
+        if not active:                            # clutch released: no motion, follow the hand
+            g = self.g_hat - np.cross(np.radians(w_dps), self.g_hat) * self.dt
+            g = (1 - self._k_idle) * g / np.linalg.norm(g) + self._k_idle * a / max(n, 1e-6)
+            self.g_hat = g / np.linalg.norm(g)
+            self.base += self._k_idle * (float(a @ self.g_hat) - self.base)
+            self.velocity, self.direction, self.moving_count = 0.0, 0, 0
+            self.last_direction, self.since_stroke = 0, 10 ** 9
+            self.still_count = self.rest_n            # a press starts as "still"; motion must show first
             return 0.0
         g = self.g_hat - np.cross(np.radians(w_dps), self.g_hat) * self.dt       # follow the rotation
         self.g_hat = g / np.linalg.norm(g)

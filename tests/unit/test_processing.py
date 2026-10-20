@@ -197,6 +197,30 @@ def test_vertical_estimator_ignores_start_up_transient_and_impossible_speeds():
         assert est.update((0.0, 0.0, 1.0 + 0.8 * (i % 7) / 7), (0.0, 0.0, 0.0)) == 0.0
     assert not est.settled
     assert abs(_stroke(est, 0.10, rest=1.0)) > 0.06          # settles on the next still period, then works
-    for _ in range(100):                                     # a 3 G push for 0.5 s would be > 2 m/s
-        out = est.update((0.0, 0.0, 4.0), (0.0, 0.0, 0.0))
-    assert out == 0.0 and not est.settled
+    outs = [est.update((0.0, 0.0, 4.0), (0.0, 0.0, 0.0)) for _ in range(100)]   # 3 G for 0.5 s: impossible
+    assert max(abs(o) for o in outs) <= est.max_speed and outs[-1] == 0.0      # cut off, settles again
+
+
+def test_vertical_estimator_clutch_only_counts_motion_while_held():
+    from teachabot.input.processing import VerticalMotionEstimator
+    import math as _m
+    est = VerticalMotionEstimator()
+    _stroke(est, 0.0, rest=1.5)                              # warm up
+    moved = 0.0
+    for i in range(160):                                     # released: a 20 cm stroke and a tilted hold
+        a = 0.2 * 2 * _m.pi / 0.8 ** 2 * _m.sin(2 * _m.pi * i * 0.005 / 0.8)
+        moved += est.update((0.0, 0.0, 1.0 + a / 9.81), (0.0, 0.0, 0.0), active=False) * 0.005
+    for _ in range(200):
+        moved += est.update((0.0, 0.5, 0.87 * 1.05), (0.0, 0.0, 0.0), active=False) * 0.005
+    assert moved == 0.0
+    for _ in range(200):                                     # pressed while tilted: reference already follows
+        moved += est.update((0.0, 0.5, 0.87 * 1.05), (0.0, 0.0, 0.0), active=True) * 0.005
+    assert abs(moved) < 1e-6
+    n = int(0.5 / 0.005)                                     # held: a 10 cm stroke along the tilted gravity
+    g = _m.hypot(0.5, 0.87 * 1.05)
+    for i in range(n):
+        a = 0.10 * 2 * _m.pi / 0.5 ** 2 * _m.sin(2 * _m.pi * i * 0.005 / 0.5) / 9.81
+        moved += est.update((0.0, 0.5 * (1 + a / g), 0.87 * 1.05 * (1 + a / g)), (0.0, 0.0, 0.0), active=True) * 0.005
+    for _ in range(200):
+        moved += est.update((0.0, 0.5, 0.87 * 1.05), (0.0, 0.0, 0.0), active=True) * 0.005
+    assert 0.06 < moved < 0.12

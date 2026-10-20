@@ -173,8 +173,9 @@ class JoyConInputProvider(InputProvider):
                 self._last_button_wall[hand] = s.wall
             for sub in s.gyro_dps:
                 st.gyro_bias.update(sub)
+            clutch = st.debouncers["shoulder"].state  # L/R held = up/down motion counts (D18)
             for k in (2, 1, 0):                       # oldest -> newest (sub-sample 0 is the newest)
-                st.vertical.update(s.accel_g[k], st.gyro_bias.apply(s.gyro_dps[k]))
+                st.vertical.update(s.accel_g[k], st.gyro_bias.apply(s.gyro_dps[k]), active=clutch)
             st.last_sample = s
             st.reports += 1
         s = st.last_sample or dev.latest()

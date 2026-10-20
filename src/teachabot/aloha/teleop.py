@@ -33,7 +33,7 @@ class TeleopSettings:
     wrist_source: str = "imu"
     wrist_gain: float = 1.0          # gripper angle per Joy-Con angle
     wrist_deadzone_deg: float = 4.0
-    height_source: str = "button"    # button: hold L/R to lower, release to rise; motion: Joy-Con up/down
+    height_source: str = "button"    # button: hold L/R to lower, release to rise; motion: hold L/R and move up/down
     height_gain: float = 1.0         # gripper speed per Joy-Con speed (motion)
 
 
