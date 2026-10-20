@@ -6,7 +6,7 @@
 | # | 할 일 | 명령 / 확인 |
 |---|---|---|
 | 1 | 강화학습 최종 숫자 확정 후 **강화학습 중지**(학습·시험 시간 단축) | 탭 `RL sparse`/`RL dense`에서 Ctrl-C (그때까지 저장됨) |
-| 2 | 결과 화면 참고 숫자 갱신 | `.venv\Scripts\python.exe scripts\make_visit_reference.py` |
+| 2 | 결과 화면 참고 숫자 갱신 (강화학습은 306시간 체크포인트, 사용자 결정) | `.venv\Scripts\python.exe scripts\make_visit_reference.py --rl-steps 11001856` |
 | 3 | 그래프 갱신(슬라이드용) | `.venv\Scripts\python.exe scripts\make_learning_figures.py` |
 | 4 | 조이콘 충전·페어링, 연결 관리자 켜기 | `JoyCon_Manager.bat` 또는 `.venv\Scripts\python.exe scripts\joycon_manager.py` → 두 손 "ready" |
 | 5 | TV에 앱 창 띄우기(전체 화면: 창 최대화) | 아래 1절 명령 |
@@ -42,7 +42,7 @@
 - ② "지금 AI가 여러분 시범을 보고 공부해요. 공부가 끝나면 처음 보는 큐브 배치 40판으로 시험을 봐요." (막대 = 시험 결과, 꾸민 숫자 없음)
 - ③ "이제 AI가 혼자 해요(천천히 보여 줄게요). AI가 멈추면 화면이 멈추고 그 손이 깜빡여요. 그 손의 스틱을 움직여서 고쳐 주세요. 고쳐 준 부분만 다시 공부해요."
 - ④ "고쳐 준 걸로 다시 공부했어요. 막대가 올라갔나요?" (내려갈 수도 있음 → "시범이 적으면 결과가 들쭉날쭉해요. 그래서 연구에서는 몇백 판으로 재요"라고 정직하게)
-- ⑤ "연구실에서 시범 10개 + 고쳐 주기 10번으로 가르친 AI는 이만큼, 시범 없이 혼자 300시간 넘게 연습한 강화학습은 이만큼이에요." (참고 숫자는 `config/visit_reference.json`, 출처 포함)
+- ⑤ "연구실에서 시범 10개 + 고쳐 주기 10번으로 가르친 AI는 이만큼이에요. 시범 없이 혼자 306시간 연습한 강화학습은, 잡는 건 배웠지만(집어 든 손 1.98) 상자에 넣지는 못해요(큐브 0.03). 점수만 쫓다 보니 '들고 있으면 점수'라서 놓지 않게 됐거든요." (참고 숫자는 `config/visit_reference.json`, 출처 포함. 장면 영상: `blog_materials/videos/cmp_rl_dense_306h.mp4`)
 
 ## 4. 리허설에서 잴 것
 - [ ] 한 조 전체 시간(연습~⑤), 단계별 시간(요약 JSON `visit.steps`)
