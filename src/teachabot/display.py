@@ -1,15 +1,22 @@
-"""Sharp window output on high-DPI screens (2026-10-20: "해상도가 왜 이리 낮지?").
+"""Sharp, non-blocking window output on high-DPI screens.
 
-The app's PC runs a 3840x2160 screen at 150 %. A Python process that is not DPI aware gets its
-window bitmap stretched 1.5x by Windows, and OpenCV's own WINDOW_NORMAL stretch is crude, so the
-1920x1080 canvas looked soft and jagged. Here the process declares itself DPI aware (this
-process only, no system setting), the window is sized in physical pixels, the canvas is scaled
-by us (area / cubic filter) to the window's real size, and while nothing is drawn over the 3D
-view the view itself is rendered again at that size and pasted in, so the robot stays crisp.
+2026-10-20: "해상도가 왜 이리 낮지?" — the PC runs 3840x2160 at 150 %. A process that is not DPI
+aware gets its window bitmap stretched 1.5x by Windows, on top of OpenCV's crude WINDOW_NORMAL
+stretch. So the process declares itself DPI aware (this process only, no system setting), the
+window is sized in physical pixels, the canvas is scaled by us to the window's real size, and
+while nothing covers the 3D view that view is rendered again at window size and pasted in.
+
+Then "해상도를 높이니까 프레임이 많이 떨어졌다" (rehearsal3: 60 ms per frame vs 37 ms headless):
+scaling, colour conversion and showing a ~6 MP image added ~20 ms to every frame of the
+simulation loop. The window now lives in its own thread — it is created, scaled, shown and
+pumped (waitKey) there, OpenCV releases the GIL while it works, and the simulation loop only
+hands over its newest frame. Keys come back through a queue.
 """
 from __future__ import annotations
 
+import queue
 import sys
+import threading
 
 import cv2
 import mujoco
@@ -37,6 +44,39 @@ def screen_size() -> tuple[int, int]:
     return 1920, 1080
 
 
+def fit(canvas: tuple[int, int], window: tuple[int, int]) -> tuple[float, int, int]:
+    """Uniform scale and offsets that fit the canvas inside the window."""
+    cw, ch = canvas
+    w, h = window
+    s = min(w / cw, h / ch)
+    return s, int((w - cw * s) / 2), int((h - ch * s) / 2)
+
+
+def compose(canvas_bgr: np.ndarray, window: tuple[int, int], sim_hi_bgr: np.ndarray | None,
+            sim_rect: tuple[int, int, int, int] | None) -> np.ndarray:
+    """The image the window shows: canvas scaled to the window (letterboxed), with the
+    window-size 3D view pasted over the canvas' 3D area when given."""
+    ch, cw = canvas_bgr.shape[:2]
+    w, h = window
+    if (w, h) == (cw, ch) or w <= 0 or h <= 0:
+        return canvas_bgr
+    s, ox, oy = fit((cw, ch), (w, h))
+    tw, th = int(round(cw * s)), int(round(ch * s))
+    inner = cv2.resize(canvas_bgr, (tw, th), interpolation=cv2.INTER_AREA if s < 1 else cv2.INTER_LINEAR)
+    if sim_hi_bgr is not None and sim_rect is not None:
+        x, y, rw, rh = sim_rect
+        X, Y = int(round(x * s)), int(round(y * s))
+        RW, RH = int(round((x + rw) * s)) - X, int(round((y + rh) * s)) - Y
+        if sim_hi_bgr.shape[1] != RW or sim_hi_bgr.shape[0] != RH:
+            sim_hi_bgr = cv2.resize(sim_hi_bgr, (RW, RH), interpolation=cv2.INTER_AREA)
+        inner[Y:Y + RH, X:X + RW] = sim_hi_bgr
+    if (tw, th) == (w, h):
+        return inner
+    out = np.zeros((h, w, 3), np.uint8)
+    out[oy:oy + th, ox:ox + tw] = inner
+    return out
+
+
 class Display:
     def __init__(self, title: str, canvas: tuple[int, int], model: mujoco.MjModel | None = None,
                  sim_rect: tuple[int, int, int, int] | None = None, camera: str = "demo_cam",
@@ -46,27 +86,27 @@ class Display:
         self.model, self.sim_rect, self.camera = model, sim_rect, camera
         sw, sh = screen_size()
         s = min(fill * sw / self.cw, fill * sh / self.ch)
-        cv2.namedWindow(title, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(title, int(self.cw * s), int(self.ch * s))
+        self._initial = (int(self.cw * s), int(self.ch * s))
+        self.window = self._initial                     # updated by the window thread
+        self.closed = False
+        self._keys: queue.Queue = queue.Queue()
+        self._latest = None
+        self._new = threading.Event()
+        self._stop = threading.Event()
+        self._fullscreen_req: bool | None = None
+        self.show_ms = 0.0
         self._hi: mujoco.Renderer | None = None
         self._hi_size = None
-        self._layout = None
+        self._ready = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="window", daemon=True)
+        self._thread.start()
+        self._ready.wait(5.0)
 
-    def _fit(self) -> tuple[float, int, int, int, int]:
-        """Uniform scale and offsets that fit the canvas in the window's image area."""
-        try:
-            _, _, w, h = cv2.getWindowImageRect(self.title)
-        except cv2.error:
-            w = h = -1
-        if w <= 0 or h <= 0:
-            w, h = self.cw, self.ch
-        s = min(w / self.cw, h / self.ch)
-        return s, w, h, int((w - self.cw * s) / 2), int((h - self.ch * s) / 2)
-
+    # -- called from the simulation loop -------------------------------------------------
     def sim_render(self, data: mujoco.MjData, fallback: mujoco.Renderer) -> tuple[np.ndarray, np.ndarray | None]:
-        """(canvas-size view, window-size view or None). The window-size view is rendered only
-        when the window is larger than the canvas; the canvas copy is then downscaled from it."""
-        s, *_ = self._fit()
+        """(canvas-size 3D view, window-size 3D view or None). Rendering stays in this thread
+        (the GL context lives here); the window-size view only when the window is larger."""
+        s, _, _ = fit((self.cw, self.ch), self.window)
         if self.model is None or self.sim_rect is None or s <= 1.05:
             fallback.update_scene(data, camera=self.camera)
             return fallback.render(), None
@@ -83,22 +123,61 @@ class Display:
         return cv2.resize(hi, (rw, rh), interpolation=cv2.INTER_AREA), hi
 
     def show(self, canvas_rgb: np.ndarray, sim_hi: np.ndarray | None = None) -> None:
-        s, w, h, ox, oy = self._fit()
-        if (w, h) == (self.cw, self.ch):
-            img = canvas_rgb
-        else:
-            tw, th = int(round(self.cw * s)), int(round(self.ch * s))
-            inner = cv2.resize(canvas_rgb, (tw, th), interpolation=cv2.INTER_AREA if s < 1 else cv2.INTER_CUBIC)
-            if sim_hi is not None and self.sim_rect is not None:
-                x, y, rw, rh = self.sim_rect
-                X, Y = int(round(x * s)), int(round(y * s))
-                RW, RH = int(round((x + rw) * s)) - X, int(round((y + rh) * s)) - Y
-                if sim_hi.shape[1] != RW or sim_hi.shape[0] != RH:
-                    sim_hi = cv2.resize(sim_hi, (RW, RH), interpolation=cv2.INTER_AREA)
-                inner[Y:Y + RH, X:X + RW] = sim_hi
-            if (tw, th) == (w, h):
-                img = inner
-            else:
-                img = np.zeros((h, w, 3), np.uint8)
-                img[oy:oy + th, ox:ox + tw] = inner
-        cv2.imshow(self.title, cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+        """Hand over the newest frame (never blocks; an unshown older frame is replaced)."""
+        self._latest = (canvas_rgb, sim_hi)
+        self._new.set()
+
+    def poll_key(self) -> int:
+        try:
+            return self._keys.get_nowait()
+        except queue.Empty:
+            return 255
+
+    def toggle_fullscreen(self) -> None:
+        self._fullscreen_req = not bool(self._fullscreen_req)
+
+    def close(self) -> None:
+        self._stop.set()
+        self._new.set()
+        self._thread.join(timeout=3.0)
+
+    # -- window thread -------------------------------------------------------------------
+    def _run(self) -> None:
+        cv2.namedWindow(self.title, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(self.title, *self._initial)
+        self._ready.set()
+        fullscreen = False
+        try:
+            while not self._stop.is_set():
+                if self._new.wait(0.01):
+                    self._new.clear()
+                    item = self._latest
+                    if item is not None:
+                        import time
+                        t0 = time.perf_counter()
+                        canvas, hi = item
+                        try:
+                            _, _, w, h = cv2.getWindowImageRect(self.title)
+                        except cv2.error:
+                            w, h = self.cw, self.ch
+                        if w > 0 and h > 0:
+                            self.window = (w, h)
+                        img = compose(cv2.cvtColor(canvas, cv2.COLOR_RGB2BGR), self.window,
+                                      None if hi is None else cv2.cvtColor(hi, cv2.COLOR_RGB2BGR), self.sim_rect)
+                        cv2.imshow(self.title, img)
+                        self.show_ms = 0.9 * self.show_ms + 0.1 * (time.perf_counter() - t0) * 1000
+                key = cv2.waitKey(1) & 0xFF
+                if key != 255:
+                    self._keys.put(key)
+                if self._fullscreen_req is not None and self._fullscreen_req != fullscreen:
+                    fullscreen = self._fullscreen_req
+                    cv2.setWindowProperty(self.title, cv2.WND_PROP_FULLSCREEN,
+                                          cv2.WINDOW_FULLSCREEN if fullscreen else cv2.WINDOW_NORMAL)
+                if cv2.getWindowProperty(self.title, cv2.WND_PROP_VISIBLE) < 1:
+                    self.closed = True
+                    break
+        finally:
+            try:
+                cv2.destroyWindow(self.title)
+            except cv2.error:
+                pass

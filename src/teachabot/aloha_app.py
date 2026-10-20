@@ -514,7 +514,7 @@ def main() -> None:
         else:
             display = Display(WINDOW, (W, H))
     learn_open = False                        # panels: the learning screen over the 3D view (Y / L)
-    fullscreen = False
+    display_ms = None
     stall = {"hand": None, "anchor": {}, "off": set(), "events": []}
 
     def apply_time_limit():
@@ -817,8 +817,8 @@ def main() -> None:
             key = 255
             if not headless:
                 display.show(out, sim_hi if getattr(hud, "sim_clear", False) else None)
-                key = cv2.waitKey(1) & 0xFF
-                if key == 27 or cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
+                key = display.poll_key()                # the window runs in its own thread
+                if key == 27 or display.closed:
                     break
             if key in (ord("r"), ord("R")):
                 new_episode()
@@ -831,9 +831,7 @@ def main() -> None:
             if key in (ord("l"), ord("L")):
                 key_learn = True
             if key in (ord("f"), ord("F")) and not headless:
-                fullscreen = not fullscreen
-                cv2.setWindowProperty(WINDOW, cv2.WND_PROP_FULLSCREEN,
-                                      cv2.WINDOW_FULLSCREEN if fullscreen else cv2.WINDOW_NORMAL)
+                display.toggle_fullscreen()
             spent = time.perf_counter() - t_start
             if spent < CONTROL_DT:
                 time.sleep(CONTROL_DT - spent)
@@ -846,8 +844,9 @@ def main() -> None:
         provider.disconnect()
         if video is not None:
             video_stats = video.close()
-        if not headless:
-            cv2.destroyAllWindows()
+        if display is not None:
+            display_ms = round(display.show_ms, 1)
+            display.close()
         summary = {"created": stamp, "task": args.task, "input": provider.source, "move": args.move, "wrist": args.wrist,
                    "episodes": episodes, "frames": len(frame_ms),
                    "wall_s": round(time.perf_counter() - t_run, 2), "sim_s_current_episode": round(env.t, 2),
@@ -858,7 +857,7 @@ def main() -> None:
                    "input_log": recorder.path.name, "record_session": args.record,
                    "demos_saved": writer.saved if writer else None,
                    "policy": str(args.policy) if args.policy else None,
-                   "retrains": retrains, "video": str(args.video) if args.video else None, "video_frames": video_stats,
+                   "retrains": retrains, "video": str(args.video) if args.video else None, "video_frames": video_stats, "window_show_ms": display_ms,
                    "visit": flow.summary() if flow else None}
         path = LOG_DIR / f"aloha_{args.task}_{'check' if check else ('visit' if flow else 'run')}_{stamp}.json"
         path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
