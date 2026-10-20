@@ -3,7 +3,7 @@ import math
 import numpy as np
 import pytest
 
-from teachabot.aloha.env import (CONTROL_DT, MAX_SPEED, WORKSPACE, Z_CARRY, Z_MIN, AlohaSortEnv, ArmCommand,
+from teachabot.aloha.env import (CONTROL_DT, MAX_SPEED, MAX_VZ, WORKSPACE, Z_CARRY, Z_MIN, AlohaSortEnv, ArmCommand,
                                  target_rotation)
 from teachabot.aloha.scene import CUBE_HALF, HANDS, S1_LAYOUT, TRAY_WALL_H
 from teachabot.aloha.teleop import TeleopMapper, TeleopSettings
@@ -133,6 +133,20 @@ def test_teleop_buttons_and_disconnect():
     c = m.commands(f, CONTROL_DT)
     assert c["left"].move == (0.5, 0.0) and c["left"].vz == -1.0 and c["left"].grip
     assert c["right"] == ArmCommand(vz=1.0)        # disconnected: open, rise, stop
+
+
+def test_teleop_motion_height_follows_joycon_and_holds():
+    m = TeleopMapper(TeleopSettings(wrist_source="off", height_source="motion"), _cal())
+    f = _frame(_hand("left", buttons={"shoulder": True}), _hand("right"))
+    f.meta["vertical_speed"] = {"left": MAX_VZ / 2, "right": -2 * MAX_VZ}
+    c = m.commands(f, CONTROL_DT)
+    assert c["left"].vz == pytest.approx(0.5)      # shoulder ignored in motion mode
+    assert c["right"].vz == -1.0                   # clipped
+    f.meta["vertical_speed"] = {"left": 0.0, "right": 0.0}
+    c = m.commands(f, CONTROL_DT)
+    assert c["left"].vz == 0.0 and c["right"].vz == 0.0   # still Joy-Con: keep the height
+    with pytest.raises(ValueError):
+        TeleopMapper(TeleopSettings(height_source="nope"))
 
 
 def test_teleop_wrist_angles_from_gravity():

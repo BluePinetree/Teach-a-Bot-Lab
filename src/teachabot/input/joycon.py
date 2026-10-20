@@ -17,7 +17,7 @@ from teachabot.btlink import status as link_status
 
 from .base import BUTTONS, HANDS, HandInput, InputFrame, InputProvider
 from .joycon_device import JoyConDevice, JoyConSample
-from .processing import (AxisMap, Debouncer, GyroBiasEstimator, StickCalibrator,
+from .processing import (AxisMap, Debouncer, GyroBiasEstimator, StickCalibrator, VerticalMotionEstimator,
                          load_axis_map, radial_deadzone)
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -36,6 +36,7 @@ _SIDE = {"left": "L", "right": "R"}
 
 class _HandState:
     def __init__(self, hand: str, debounce_s: float):
+        self.vertical = VerticalMotionEstimator()
         self.hand = hand
         self.calibrator = StickCalibrator()
         self.debouncers = {b: Debouncer(debounce_s) for b in BUTTONS[hand]}
@@ -106,7 +107,10 @@ class JoyConInputProvider(InputProvider):
         hands = {h: self._poll_hand(h) for h in HANDS}
         frame = InputFrame(timestamp=time.perf_counter(), seq=self._seq, source=self.source,
                            left=hands["left"], right=hands["right"],
-                           meta={"imu_frame_verified": self.right_axis_map.verified})
+                           meta={"imu_frame_verified": self.right_axis_map.verified,
+                                 # m/s, + = up; Joy-Con moved up/down (VerticalMotionEstimator)
+                                 "vertical_speed": {h: (self._state[h].vertical.output if hands[h].connected else 0.0)
+                                                    for h in HANDS}})
         self._seq += 1
         return frame
 
@@ -159,6 +163,7 @@ class JoyConInputProvider(InputProvider):
         if not dev.connected:
             for d in st.debouncers.values():
                 d.reset()
+            st.vertical.reset()
             return HandInput.neutral(hand, connected=False)
         for s in samples:
             st.calibrator.feed(s.stick_raw)
@@ -168,6 +173,8 @@ class JoyConInputProvider(InputProvider):
                 self._last_button_wall[hand] = s.wall
             for sub in s.gyro_dps:
                 st.gyro_bias.update(sub)
+            for k in (2, 1, 0):                       # oldest -> newest (sub-sample 0 is the newest)
+                st.vertical.update(s.accel_g[k], st.gyro_bias.apply(s.gyro_dps[k]))
             st.last_sample = s
             st.reports += 1
         s = st.last_sample or dev.latest()

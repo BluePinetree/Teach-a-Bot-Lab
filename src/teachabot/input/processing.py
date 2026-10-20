@@ -217,3 +217,117 @@ def estimate_axis_map(left_accel, right_accel, max_rms_g: float = 0.08,
         return AxisMap(detail=detail)
     signs = tuple(int(np.sign(M[i, i])) for i in range(3))
     return AxisMap(signs=signs, verified=True, detail=detail)
+
+
+class VerticalMotionEstimator:
+    """How fast one Joy-Con is moving up or down right now (m/s), from its 200 Hz IMU.
+
+    Causal zero-velocity updates: while the hand is still (vertical specific force near its
+    resting value and little rotation for `rest_s`), the speed is 0 and the resting value and
+    gravity direction are re-learned; while it moves, the resting value is frozen and the vertical
+    acceleration is integrated once. Integrating twice to a position drifts (59.5 cm in 10 s,
+    D8); one integration that restarts at every stop does not accumulate, and the person closes
+    the loop by watching the gripper.
+
+    Why vertical is the easy axis: a few degrees of unintended tilt leak gravity into the
+    horizontal axes as G sin(tilt) (0.5 m/s^2 at 3 deg, the plan-A problem) but into the vertical
+    one only as G (1 - cos(tilt)) (0.013 m/s^2 at 3 deg). The resting value absorbs the sensor's
+    scale error (the right Joy-Con reads 1.09 G at rest).
+    """
+
+    G = 9.81
+
+    def __init__(self, dt: float = 0.005, rest_s: float = 0.2, rest_force: float = 0.2,
+                 rest_gyro_dps: float = 8.0, gravity_tau: float = 0.5, deadband: float = 0.02,
+                 max_move_s: float = 2.0, refractory_s: float = 0.4, warmup_s: float = 1.0,
+                 max_speed: float = 2.0):
+        """Rest thresholds from the stroke logs' still windows: vertical force noise sigma
+        ~0.07 m/s^2 (0.2 = ~3 sigma), gyro |w| p95 2-3 dps (8 dps margin). The IMU's first ~1 s after connecting is a
+        transient (it read 14.9 m/s in a replay), so nothing is output until `warmup_s` has passed
+        and the hand has been still once; a speed above `max_speed` (no hand stroke is that fast)
+        means the reference is wrong and the estimator settles again."""
+        self.dt, self.deadband = dt, deadband
+        self.rest_n = max(1, int(round(rest_s / dt)))
+        self.rest_force, self.rest_gyro = rest_force, rest_gyro_dps
+        self._k = dt / gravity_tau
+        self.max_move_n = int(round(max_move_s / dt))      # a person's stroke is shorter: longer = bad reference
+        self.refractory_n = int(round(refractory_s / dt))  # just after a stroke, ignore the opposite direction
+        self.warmup_n, self.max_speed = int(round(warmup_s / dt)), max_speed
+        self._k_settle = min(1.0, dt / 0.05)
+        self.reset()
+
+    def reset(self) -> None:
+        self.g_hat: np.ndarray | None = None
+        self.base = 0.0
+        self.velocity = 0.0
+        self.still_count = 0
+        self.direction = 0           # sign of the current stroke; a stroke does not reverse
+        self.moving_count = 0
+        self.last_direction = 0
+        self.since_stroke = 10 ** 9
+        self.settled = False         # False: warming up / re-learning the reference, output 0
+        self.settle_count = 0
+
+    @property
+    def moving(self) -> bool:
+        return self.still_count < self.rest_n
+
+    def update(self, accel_g, gyro_dps) -> float:
+        a = np.asarray(accel_g, float) * self.G
+        n = float(np.linalg.norm(a))
+        if self.g_hat is None:
+            if n < 1e-6:
+                return 0.0
+            self.g_hat, self.base = a / n, n
+            return 0.0
+        w_dps = np.asarray(gyro_dps, float)
+        if not self.settled:                      # follow the raw signal closely until it is quiet
+            g = (1 - self._k_settle) * self.g_hat + self._k_settle * a / max(n, 1e-6)
+            self.g_hat = g / np.linalg.norm(g)
+            dev = float(a @ self.g_hat) - self.base
+            self.base += self._k_settle * dev
+            quiet = abs(dev) < self.rest_force and float(np.linalg.norm(w_dps)) < self.rest_gyro
+            self.still_count = self.still_count + 1 if quiet else 0
+            self.settle_count += 1
+            if self.settle_count >= self.warmup_n and self.still_count >= self.rest_n:
+                self.settled, self.moving_count = True, 0
+            return 0.0
+        g = self.g_hat - np.cross(np.radians(w_dps), self.g_hat) * self.dt       # follow the rotation
+        self.g_hat = g / np.linalg.norm(g)
+        dev = float(a @ self.g_hat) - self.base
+        quiet = abs(dev) < self.rest_force and float(np.linalg.norm(w_dps)) < self.rest_gyro
+        self.still_count = self.still_count + 1 if quiet else 0
+        self.moving_count = self.moving_count + 1 if self.moving else 0
+        self.since_stroke += 1
+        if self.moving_count > self.max_move_n:   # "moving" for too long: the reference is wrong, re-learn
+            self.g_hat, self.base = a / max(n, 1e-6), n
+            self.velocity, self.direction, self.moving_count = 0.0, 0, 0
+            self.still_count = self.rest_n
+            return 0.0
+        if not self.moving:                       # still: speed 0, re-learn gravity and resting value
+            if self.direction:
+                self.last_direction, self.since_stroke = self.direction, 0
+            self.velocity = 0.0
+            self.direction = 0
+            g = (1 - self._k) * self.g_hat + self._k * a / max(n, 1e-6)
+            self.g_hat = g / np.linalg.norm(g)
+            self.base += self._k * (float(a @ self.g_hat) - self.base)
+        else:
+            self.velocity += dev * self.dt
+            if self.direction == 0 and abs(self.velocity) > self.deadband:
+                d = 1 if self.velocity > 0 else -1
+                if d == -self.last_direction and self.since_stroke < self.refractory_n:
+                    self.velocity = 0.0           # braking tail of the previous stroke, not a new one
+                else:
+                    self.direction = d
+            if self.direction and self.velocity * self.direction < 0:
+                self.velocity = 0.0               # the braking at the end of a stroke is not a new stroke
+            if abs(self.velocity) > self.max_speed:   # impossible for a hand: bad reference, settle again
+                self.velocity, self.direction = 0.0, 0
+                self.settled, self.settle_count, self.still_count = False, self.warmup_n, 0
+        return self.output
+
+    @property
+    def output(self) -> float:
+        v = self.velocity
+        return 0.0 if abs(v) <= self.deadband else v - math.copysign(self.deadband, v)

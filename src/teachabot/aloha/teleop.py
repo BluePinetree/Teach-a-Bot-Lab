@@ -19,11 +19,12 @@ import numpy as np
 from teachabot.input.base import InputFrame
 from teachabot.input.motion import MotionCalibration, MotionMapper
 
-from .env import PITCH_LIMIT, TWIST_LIMIT, ArmCommand
+from .env import MAX_VZ, PITCH_LIMIT, TWIST_LIMIT, ArmCommand
 from .scene import HANDS
 
 MOVE_SOURCES = ("stick", "tilt", "point")   # webcam / stroke: shelved (D9)
 WRIST_SOURCES = ("imu", "off")
+HEIGHT_SOURCES = ("button", "motion")       # motion: move the Joy-Con up/down (D18)
 
 
 @dataclass
@@ -32,6 +33,8 @@ class TeleopSettings:
     wrist_source: str = "imu"
     wrist_gain: float = 1.0          # gripper angle per Joy-Con angle
     wrist_deadzone_deg: float = 4.0
+    height_source: str = "button"    # button: hold L/R to lower, release to rise; motion: Joy-Con up/down
+    height_gain: float = 1.0         # gripper speed per Joy-Con speed (motion)
 
 
 def _unit(v) -> np.ndarray:
@@ -69,6 +72,8 @@ class TeleopMapper:
     def __init__(self, settings: TeleopSettings, cal: MotionCalibration | None = None):
         if settings.move_source not in MOVE_SOURCES:
             raise ValueError(f"move_source must be one of {MOVE_SOURCES}")
+        if settings.height_source not in HEIGHT_SOURCES:
+            raise ValueError(f"height_source must be one of {HEIGHT_SOURCES}")
         if settings.wrist_source not in WRIST_SOURCES:
             raise ValueError(f"wrist_source must be one of {WRIST_SOURCES}")
         self.settings = settings
@@ -101,8 +106,13 @@ class TeleopMapper:
                 fwd, right = self.wrist.angles(h, hand.accel, dt)
                 self.last_angles[h] = (fwd, right)
                 pitch, twist = self._shape(fwd, PITCH_LIMIT), self._shape(right, TWIST_LIMIT)
+            if self.settings.height_source == "motion":
+                v = float(frame.meta.get("vertical_speed", {}).get(h, 0.0))
+                vz = max(-1.0, min(1.0, self.settings.height_gain * v / MAX_VZ))   # holds height when still
+            else:
+                vz = -1.0 if hand.buttons["shoulder"] else 1.0
             out[h] = ArmCommand(move=(float(move[0]), float(move[1])),
-                                vz=-1.0 if hand.buttons["shoulder"] else 1.0,
+                                vz=vz,
                                 pitch=pitch, twist=twist, grip=hand.grip)
         return out
 

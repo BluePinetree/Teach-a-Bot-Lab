@@ -145,3 +145,58 @@ class TestEstimateAxisMap:
     def test_json_roundtrip(self):
         m = AxisMap(signs=(1, -1, -1), verified=True, detail={"x": 1})
         assert AxisMap.from_json(m.to_json()) == m
+
+
+# -- vertical motion ----------------------------------------------------------------------
+
+def _stroke(est, dz, duration=0.5, rest=1.0, scale=1.0, dt=0.005):
+    """Feed a still hand, a smooth up/down stroke of dz metres (sine-shaped acceleration), then rest.
+    Returns the integrated estimator output (the height a gripper would move at gain 1)."""
+    import math as _m
+    moved = 0.0
+    n_rest, n_move = int(rest / dt), int(duration / dt)
+    for _ in range(n_rest):
+        moved += est.update((0.0, 0.0, scale), (0.0, 0.0, 0.0)) * dt
+    for i in range(n_move):                                  # a(t) = A sin(2 pi t / T), displacement dz
+        t = i * dt
+        a = dz * 2 * _m.pi / duration ** 2 * _m.sin(2 * _m.pi * t / duration)
+        moved += est.update((0.0, 0.0, scale + a / 9.81), (0.0, 0.0, 0.0)) * dt
+    for _ in range(n_rest):
+        moved += est.update((0.0, 0.0, scale), (0.0, 0.0, 0.0)) * dt
+    return moved
+
+
+def test_vertical_estimator_still_hand_stays_still_even_with_scale_error():
+    from teachabot.input.processing import VerticalMotionEstimator
+    est = VerticalMotionEstimator()
+    assert abs(_stroke(est, 0.0, scale=1.09)) < 1e-6         # right Joy-Con reads 1.09 G at rest
+    assert est.output == 0.0
+
+
+def test_vertical_estimator_follows_direction_of_a_stroke():
+    from teachabot.input.processing import VerticalMotionEstimator
+    up = _stroke(VerticalMotionEstimator(), +0.10)
+    down = _stroke(VerticalMotionEstimator(), -0.10)
+    assert 0.06 < up < 0.12 and -0.12 < down < -0.06          # direction right, most of the 10 cm
+    assert abs(up + down) < 0.01                              # symmetric
+
+
+def test_vertical_estimator_ignores_how_the_joycon_is_held():
+    import numpy as np
+    from teachabot.input.processing import VerticalMotionEstimator
+    est = VerticalMotionEstimator()
+    g = np.array([0.0, np.sin(0.6), np.cos(0.6)])            # held tilted by ~34 deg, not moving
+    moved = sum(est.update(g * 1.05, (0, 0, 0)) * 0.005 for _ in range(600))
+    assert abs(moved) < 1e-6
+
+
+def test_vertical_estimator_ignores_start_up_transient_and_impossible_speeds():
+    from teachabot.input.processing import VerticalMotionEstimator
+    est = VerticalMotionEstimator()
+    for i in range(200):                                     # 1 s of IMU start-up: force swings wildly
+        assert est.update((0.0, 0.0, 1.0 + 0.8 * (i % 7) / 7), (0.0, 0.0, 0.0)) == 0.0
+    assert not est.settled
+    assert abs(_stroke(est, 0.10, rest=1.0)) > 0.06          # settles on the next still period, then works
+    for _ in range(100):                                     # a 3 G push for 0.5 s would be > 2 m/s
+        out = est.update((0.0, 0.0, 4.0), (0.0, 0.0, 0.0))
+    assert out == 0.0 and not est.settled
