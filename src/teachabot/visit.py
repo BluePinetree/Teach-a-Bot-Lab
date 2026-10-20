@@ -8,7 +8,7 @@ transitions can be tested on their own.
     ④ 다시 공부     retrain with the corrections, test again (③ ↔ ④ can repeat)
     ⑤ 결과         the group's bars next to reference numbers measured beforehand
 
-The operator moves on with N (next) and starts training with X / T. Nothing here changes
+The operator moves on with B held 1 s on the right Joy-Con (or N) and starts training with X / T. Nothing here changes
 what the AI learns or how it is tested; it only decides which screen and data come next.
 """
 from __future__ import annotations
@@ -130,7 +130,7 @@ class VisitFlow:
     def hint(self) -> str:
         if self.step == "practice":
             if self.practice_complete:
-                return "준비 완료!  N: 시범 시작  ·  다음 학생은 캡처/홈"
+                return "준비 완료!  B 길게: 시범 시작  ·  다음 학생은 캡처/홈"
             marks = "  ".join(("■" if k in self.practice_done else "□") + label for k, label in PRACTICE_ITEMS)
             return f"연습 (저장 안 함):  {marks}"
         if self.step == "demo":
@@ -139,8 +139,8 @@ class VisitFlow:
             return f"시범 보이기: 성공 {self.demos_ok}/{self.target_demos}판 (실패한 판은 배우지 않아요)"
         if self.step == "ai":
             if self.takeovers:
-                return f"고쳐 준 판 {self.takeovers}개 · X: 다시 공부  ·  N: 결과 보기"
-            return "AI가 멈추면 그 손의 스틱이나 버튼으로 넘겨받아 마무리해 주세요  ·  N: 결과 보기"
+                return f"고쳐 준 판 {self.takeovers}개 · X: 다시 공부  ·  B 길게: 결과 보기"
+            return "AI가 멈추면 그 손의 스틱이나 버튼으로 넘겨받아 마무리해 주세요  ·  B 길게: 결과 보기"
         if self.step in ("train", "retrain"):
             return "AI가 공부하고 시험 보는 중이에요"
         return "오늘의 결과"

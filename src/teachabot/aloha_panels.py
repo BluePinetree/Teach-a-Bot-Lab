@@ -250,9 +250,10 @@ class PanelUI:
         self._nn_img: Image.Image | None = None
         self.trial: TrialView | None = None
         self.sim_clear = True          # after draw(): nothing was drawn over the 3D view
+        self._visit = False
 
     # ---------------------------------------------------------------- static layer
-    def _labels(self, h: str, mapper, source: str, trainer_on: bool) -> list[tuple[str, str, str]]:
+    def _labels(self, h: str, mapper, source: str, trainer_on: bool, visit: bool = False) -> list[tuple[str, str, str]]:
         """(part, key name, action) callouts for one Joy-Con, in drawing order."""
         mode = mapper.height_mode(h)
         height = {"button": "누르고 있기 = 내리기", "tilt": "누른 채 꺾기 = 높이",
@@ -263,7 +264,10 @@ class PanelUI:
         rows = [("grip", "ZR", "누르고 있기 = 집기"), ("shoulder", "R", height)]
         if trainer_on:
             rows.append(("x", "X", "다시 학습"))
-        rows += [("a", "A", "시작 · 확인"), ("y", "Y", "학습 화면 열기/닫기"),
+        rows.append(("a", "A", "시작 · 확인"))
+        if visit:
+            rows.append(("b", "B (1초 누르기)", "다음 단계"))
+        rows += [("y", "Y", "학습 화면 열기/닫기"),
                  ("stick", "스틱", "밀기 = 이동"), ("home", "홈", "새 판")]
         return rows
 
@@ -365,7 +369,7 @@ class PanelUI:
                     d.text((x0 + 28, 150 + 42 * j), k, font=self.f["smallb"], fill=TXT)
                     d.text((x0 + 150, 152 + 42 * j), fit(d, act, self.f["small"], 150), font=self.f["small"], fill=DIM)
             else:
-                self._draw_joycon(d, h, x0, set(), False, self._labels(h, mapper, source, trainer_on), False)
+                self._draw_joycon(d, h, x0, set(), False, self._labels(h, mapper, source, trainer_on, key[-1]), False)
             d.line((x0 + 26, 568, x0 + 294, 568), fill=LINE, width=1)
             third = "꺾기" if mapper.height_mode(h) == "tilt" and not mapper.wrist_ready(h) else "손목"
             for j, lab in enumerate(("집게", "높이", third)):
@@ -384,7 +388,8 @@ class PanelUI:
              learn_open: bool = False, reference: list[dict] | None = None, episodes: list[dict] | None = None,
              flow=None, state: str = "running", time_limit: float | None = None, result_sheet=None) -> np.ndarray:
         key = (source, tuple(mapper.height_mode(h) for h in HANDS), tuple(mapper.wrist_ready(h) for h in HANDS),
-               trainer is not None)
+               trainer is not None, flow is not None)
+        self._visit = flow is not None
         if key != self._base_key:
             self._base_key, self._base = key, self._base_layer(key, mapper, source, trainer is not None)
         canvas = self._base.copy()
@@ -453,7 +458,8 @@ class PanelUI:
             pressed = {b for b, v in hand.buttons.items() if v}
             stick_on = float(np.hypot(*hand.stick)) > 0.2
             if pressed or stick_on:
-                self._draw_joycon(d, h, x0, pressed, stick_on, self._labels(h, mapper, source, trainer_on), True)
+                self._draw_joycon(d, h, x0, pressed, stick_on,
+                                  self._labels(h, mapper, source, trainer_on, self._visit), True)
         tg = env.targets[h]
         grip = "집는 중" if tg.grip else "열림"
         if info.in_tray[h]:

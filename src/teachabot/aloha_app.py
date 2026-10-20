@@ -58,6 +58,7 @@ def visit_demo_seed(group: str) -> int:
     import zlib
     return VISIT_DEMO_SEED_BASE + 1000 * (zlib.crc32(group.encode("utf-8")) % 1000)
 TAKEOVER_STICK = 0.35            # stick deflection that hands an arm to the person
+NEXT_HOLD_S = 1.0                # visit: hold B (right Joy-Con) this long = next step (N on the keyboard)
 STALL_S, STALL_M = 1.5, 0.01     # an AI arm whose target moves < 1 cm in 1.5 s (sim) is "stuck"
 VIDEO_FPS = 30
 VISIT_REFERENCE = ROOT / "config" / "visit_reference.json"
@@ -570,6 +571,7 @@ def main() -> None:
     key_train = False
     key_next = False
     key_learn = False
+    b_hold, b_fired = None, False
     t_run = time.perf_counter()
     t_prev, acc = t_run, 0.0
     notice, notice_t = None, -1e9
@@ -586,6 +588,12 @@ def main() -> None:
                 pressed[h] = {b: v and not prev_buttons.get((h, b), False) for b, v in hb.items()}
                 for b, v in hb.items():
                     prev_buttons[(h, b)] = v
+            if frame.right.buttons.get("b"):          # long press only: a student's tap does not skip a step
+                b_hold = b_hold if b_hold is not None else t_start
+                if not b_fired and t_start - b_hold >= NEXT_HOLD_S:
+                    key_next, b_fired = True, True
+            else:
+                b_hold, b_fired = None, False
             if pressed["left"].get("minus"):
                 mapper.recenter("left", frame.left.accel)
             if pressed["right"].get("plus"):
