@@ -136,9 +136,11 @@ class S1Check:
 
 TASK_TEXT = {
     "s1": {"title": "S1 정리하기", "sub": "파란 큐브 → 파란 상자 (왼손),  주황 큐브 → 주황 상자 (오른손)",
-           "hand": {"left": "왼손 (파란)", "right": "오른손 (주황)"}, "done": "상자 안!"},
+           "hand": {"left": "왼손 (파란)", "right": "오른손 (주황)"}, "done": "상자 안!",
+           "goal": "큐브를 같은 색 상자에 넣기"},
     "s2": {"title": "S2 양팔 트레이 들기", "sub": "두 손으로 손잡이를 잡고 함께 들어 노란 칸에 내려놓기 · 공을 떨어뜨리지 말기",
-           "hand": {"left": "왼손", "right": "오른손"}, "done": "도착!"},
+           "hand": {"left": "왼손", "right": "오른손"}, "done": "도착!",
+           "goal": "트레이를 둘이 함께 들어 노란 칸에 내려놓기"},
 }
 FAIL_TEXT = {"ball_off": "실패: 공이 트레이에서 떨어졌어요", "cube_off": "실패: 큐브가 트레이에서 떨어졌어요", "tray_fell": "실패: 트레이가 떨어졌어요",
              "timeout": "실패: 시간 초과"}
@@ -162,7 +164,7 @@ class Hud:
              panel: tuple[str, list[tuple[str, tuple]]] | None = None, mode_line: str | None = None,
              controllers: dict | None = None, history: list[dict] | None = None,
              guide_text: str | None = None, notice: str | None = None,
-             steps: tuple[list, str] | None = None, alert_hand: str | None = None) -> np.ndarray:
+             steps: tuple[list, str] | None = None, alert_hand: str | None = None, **_panel_only) -> np.ndarray:
         img = Image.fromarray(rgb).convert("RGBA")
         over = Image.new("RGBA", img.size, (0, 0, 0, 0))
         d = ImageDraw.Draw(over)
@@ -398,6 +400,9 @@ def main() -> None:
                     help="button = hold L/R to lower; tilt = hold L/R and bend the wrist; motion = hold L/R "
                          "and move the Joy-Con up/down (shelved) (default: S1 button, S2 tilt)")
     ap.add_argument("--height-gain", type=float, default=1.0, help="motion: gripper speed per Joy-Con speed")
+    ap.add_argument("--ui", choices=("panels", "classic"), default="panels",
+                    help="panels = 1920x1080 layout with Joy-Con drawings and the learning screen (docs/UI_REVIEW.md); "
+                         "classic = the earlier 1280x720 overlay screen")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--check", action="store_true", help="noon checkpoint checklist")
     ap.add_argument("--screenshot", type=Path, help="render a few seconds with no input, save, exit")
@@ -432,7 +437,11 @@ def main() -> None:
                                          height_source=args.height, height_gain=args.height_gain),
                           MotionCalibration.load(MOTION_CAL_PATH))
     renderer = mujoco.Renderer(env.model, H, W)
-    hud = Hud(args.task)
+    if args.ui == "panels":
+        from teachabot.aloha_panels import PanelUI
+        hud = PanelUI(args.task, TASK_TEXT[args.task])
+    else:
+        hud = Hud(args.task)
     check = S1Check() if args.check else None
     seed, episode = args.seed, 1
     if args.visit and args.seed == 0:
@@ -447,7 +456,8 @@ def main() -> None:
             _, info = env.step({h: ArmCommand() for h in HANDS})
         renderer.update_scene(env.data, camera="demo_cam")
         out = hud.draw(renderer.render(), env, info, None, mapper, "joycon", episode, None, check, 0,
-                       panel=start_panel("waiting", {"left": True, "right": False}, "joycon"))
+                       panel=start_panel("waiting", {"left": True, "right": False}, "joycon"),
+                       state="waiting", time_limit=env.time_limit)
         args.screenshot.parent.mkdir(parents=True, exist_ok=True)
         Image.fromarray(out).save(args.screenshot)
         print("saved", args.screenshot)
@@ -472,7 +482,7 @@ def main() -> None:
         from teachabot.aloha.scripted import ScriptedSorter
         autopilot = ScriptedSorter()
     result_shown_at = None
-    reference = load_reference(VISIT_REFERENCE) if flow else []
+    reference = load_reference(VISIT_REFERENCE) if (flow or args.ui == "panels") else []
     if flow:
         policy = None                         # every group starts by teaching
         writer = DemoWriter(args.visit, provider.source)
@@ -484,7 +494,7 @@ def main() -> None:
     video = None
     if args.video:
         args.video.parent.mkdir(parents=True, exist_ok=True)
-        video = cv2.VideoWriter(str(args.video), cv2.VideoWriter_fourcc(*"mp4v"), VIDEO_FPS, (W, H))
+        video = "pending"                     # opened at the first frame (its size depends on --ui)
     next_video_t = 0.0
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -495,7 +505,12 @@ def main() -> None:
     headless = autopilot is not None          # smoke tests never pop a window on the user's screen
     if not headless:
         cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(WINDOW, W, H)
+        if args.ui == "panels":
+            cv2.resizeWindow(WINDOW, 1600, 900)           # F: full screen (the canvas is 1920x1080)
+        else:
+            cv2.resizeWindow(WINDOW, W, H)
+    learn_open = False                        # panels: the learning screen over the 3D view (Y / L)
+    fullscreen = False
     stall = {"hand": None, "anchor": {}, "off": set(), "events": []}
 
     def apply_time_limit():
@@ -552,6 +567,7 @@ def main() -> None:
     key_start = bool(args.autostart)
     key_train = False
     key_next = False
+    key_learn = False
     t_run = time.perf_counter()
     t_prev, acc = t_run, 0.0
     notice, notice_t = None, -1e9
@@ -575,14 +591,19 @@ def main() -> None:
             if pressed["left"].get("capture") or pressed["right"].get("home"):
                 new_episode()
                 continue
+            if pressed["right"].get("y") or key_learn:
+                learn_open = not learn_open
+            key_learn = False
             if trainer and (pressed["right"].get("x") or key_train) and state in ("waiting", "finished") \
                     and not trainer.busy():
                 if flow is None or flow.start_training():
                     trainer.start()
+                    learn_open = True
             if flow and key_next and state in ("waiting", "finished") and not trainer.busy():
                 went = flow.next()
                 if went == "train":
                     trainer.start()
+                    learn_open = True
                 elif went == "demo":
                     new_episode()                      # practice over: fresh layout, recording on
             key_train = key_next = False
@@ -646,6 +667,7 @@ def main() -> None:
             if flow and flow.step == "result":
                 start = False                      # the result screen stays until the operator closes it
             if state == "waiting" and ready and start:
+                learn_open = False                     # play: the 3D view stays clear
                 if trainer and trainer.state in ("done", "error"):
                     trainer.state = "idle"             # the result panel has been seen
                 for h in HANDS:                    # the grip held at start becomes the wrist neutral
@@ -757,11 +779,20 @@ def main() -> None:
                            history=trainer.history if (trainer and not (flow and flow.step == "result")) else None,
                            notice=notice,
                            steps=(flow.banner(), flow.hint()) if flow else None,
-                           alert_hand=stall["hand"] if state == "stalled" else None)
+                           alert_hand=stall["hand"] if state == "stalled" else None,
+                           # panels only
+                           trainer=trainer, policy=policy, policy_path=policy_path,
+                           learn_open=learn_open and state != "running", reference=reference, episodes=episodes,
+                           flow=flow, state=state, time_limit=env.time_limit,
+                           result_sheet=(flow.group, trainer.history, reference) if (flow and flow.step == "result")
+                           else None)
             # record only while something happens (not the idle start screen), so a window left
             # open does not fill the disk; the video simply skips the waiting time
             recording = (state != "waiting" or (trainer is not None and trainer.state != "idle")
                          or (flow is not None and flow.step == "result"))
+            if video == "pending":
+                video = cv2.VideoWriter(str(args.video), cv2.VideoWriter_fourcc(*"mp4v"), VIDEO_FPS,
+                                        (out.shape[1], out.shape[0]))
             if video is not None and not recording:
                 next_video_t = time.perf_counter() - t_run
             if video is not None and recording:
@@ -783,6 +814,12 @@ def main() -> None:
                 key_train = True
             if key in (ord("n"), ord("N")):
                 key_next = True
+            if key in (ord("l"), ord("L")):
+                key_learn = True
+            if key in (ord("f"), ord("F")) and not headless:
+                fullscreen = not fullscreen
+                cv2.setWindowProperty(WINDOW, cv2.WND_PROP_FULLSCREEN,
+                                      cv2.WINDOW_FULLSCREEN if fullscreen else cv2.WINDOW_NORMAL)
             spent = time.perf_counter() - t_start
             if spent < CONTROL_DT:
                 time.sleep(CONTROL_DT - spent)
@@ -793,7 +830,7 @@ def main() -> None:
     finally:
         recorder.close()
         provider.disconnect()
-        if video is not None:
+        if video is not None and video != "pending":
             video.release()
         if not headless:
             cv2.destroyAllWindows()
