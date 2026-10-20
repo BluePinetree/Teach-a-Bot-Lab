@@ -50,6 +50,7 @@ Python 3.12 (`.venv`, uv), joycon-python 0.2.4 + hidapi 0.15.0, numpy, pytest. *
 .venv\Scripts\python.exe -m teachabot.aloha_app --visit 1조 --visit-demos 3 [--visit-base s01 t01] [--video V.mp4]   # 견학 모드 (docs/VISIT_RUNBOOK.md)
 .venv\Scripts\python.exe scripts\make_visit_reference.py                # 견학 결과 화면 참고 숫자 갱신 (측정 파일에서)
 .venv\Scripts\python.exe -m teachabot.aloha_app --task s2 [--record s2_01]   # S2 양팔 트레이 들기 (조작·시범 기록만, D16)
+.venv\Scripts\python.exe -m teachabot.aloha_app ... [--ui classic]   # 기본은 패널 화면 1920x1080 (F 전체 화면, 오른쪽 Y/키보드 L 학습 화면), classic = 예전 1280x720 화면
 ```
 학습 데이터·정책·강화학습 결과·영상은 `data/demos`, `data/policies`, `data/rl_runs`, `data/videos` (git 미추적). 배치 seed: 평가 1,000,000~ / 튜닝 2,000,000~ / AI 시연·개입 3,000,000~ (섞지 말 것). 강화학습 실행 중에도 앱 프레임은 ~25ms로 문제없음.
 ALOHA 앱은 두 조이콘이 연결되고 오른쪽 A(키보드 Space)를 눌러야 시작한다. Esc 또는 Ctrl-C로 끝내면 요약 JSON이 `data/logs`에 저장된다.
