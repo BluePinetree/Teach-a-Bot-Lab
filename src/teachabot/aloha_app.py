@@ -329,6 +329,21 @@ def ref_rate_of(line: dict) -> float | None:
     return ref_rate(line.get("value", ""))
 
 
+INTRO_TIME_LIMIT = 25.0           # visit intro: the RL AI never finishes, so a round is kept short
+INTRO_SEED_BASE = PRACTICE_SEED_BASE + 500      # intro layouts: unseen, apart from the AI-round layouts
+INTRO_NEXT_S = 3.0                # intro: the next round starts by itself after this pause
+
+
+def intro_panel(state: str, loaded: bool):
+    if state not in ("waiting", "paused"):
+        return None
+    if not loaded:
+        return "AI 구경 준비", [("시범 없이 배운 AI를 불러오는 중이에요 (5초쯤)", (240, 242, 248))]
+    return "AI 구경", [("A 버튼(또는 스페이스바): 시범 없이 혼자 연습(강화학습)한 AI가 해 봅니다", (240, 242, 248)),
+                     ("306시간 동안 혼자 연습했어요. 잘하는지 보세요", (255, 210, 120)),
+                     ("B 길게(또는 N): 연습 시작", (200, 205, 215))]
+
+
 def start_panel(state: str, connected: dict, source: str, ai: bool = False):
     if state not in ("waiting", "paused"):
         return None
@@ -433,6 +448,8 @@ def main() -> None:
                     help="AI rounds play at this fraction of real time (same decisions, slower to watch); "
                          "back to 1x once a person takes an arm over")
     ap.add_argument("--visit-no-practice", action="store_true", help="visit: skip the practice step")
+    ap.add_argument("--visit-no-intro", action="store_true",
+                    help="visit: skip the first step (watching the RL AI from before imitation play alone)")
     ap.add_argument("--test-autopilot", action="store_true",
                     help="SMOKE TEST ONLY: a scripted controller plays the people's part and presses the keys, "
                          "to run the whole visit flow end to end (use a session code starting with _)")
@@ -488,7 +505,7 @@ def main() -> None:
     if trainer:
         trainer.add_baseline(args.policy)
     flow = VisitFlow(args.visit, args.visit_demos, tuple(args.visit_base),
-                     practice=not args.visit_no_practice) if args.visit else None
+                     practice=not args.visit_no_practice, intro=not args.visit_no_intro) if args.visit else None
     autopilot = None
     if args.test_autopilot:
         if not (flow and args.visit.startswith("_")):
@@ -496,6 +513,7 @@ def main() -> None:
         from teachabot.aloha.scripted import ScriptedSorter
         autopilot = ScriptedSorter()
     result_shown_at = None
+    autopilot_t: dict = {}
     reference = load_reference(VISIT_REFERENCE) if (flow or args.ui == "panels") else []
     if flow:
         policy = None                         # every group starts by teaching
@@ -504,6 +522,24 @@ def main() -> None:
         for h in HANDS:
             controllers[h] = "human"
     policy_path = args.policy
+    intro_rl: dict = {}
+    demo_seed = seed
+    if flow and flow.step == "intro":
+        import threading
+
+        def _load_intro():
+            from teachabot.learning.rl_policy import RLPolicy
+            try:
+                intro_rl["policy"] = RLPolicy(args.compare_rl)
+            except Exception as e:
+                print("intro RL policy failed:", e, flush=True)
+                intro_rl["error"] = str(e)
+        threading.Thread(target=_load_intro, daemon=True).start()
+        seed = INTRO_SEED_BASE
+        env.reset(seed)
+        info = env.info()
+    finished_at = None
+    prev_step = flow.step if flow else None
     retrains: list[dict] = []
     video = None
     if args.video:                            # encoded in a background thread (teachabot.video)
@@ -529,7 +565,6 @@ def main() -> None:
             display = Display(WINDOW, (W, H))
     learn_open = False                        # panels: the learning screen over the 3D view (Y / L)
     compare_open = bool(args.compare)         # panels: RL vs imitation side by side (C; default at the visit result)
-    was_result = False
     compare = None
     if args.ui == "panels" and (flow or policy is not None or args.policy):
         from teachabot.compare_view import CompareView
@@ -539,7 +574,8 @@ def main() -> None:
     stall = {"hand": None, "anchor": {}, "off": set(), "events": []}
 
     def apply_time_limit():
-        env.time_limit = 1e9 if (flow and flow.step == "practice") else args.time_limit
+        env.time_limit = (1e9 if (flow and flow.step == "practice") else
+                          INTRO_TIME_LIMIT if (flow and flow.step == "intro") else args.time_limit)
 
     def reset_stall():
         stall.update(hand=None, anchor={h: (env.targets[h].pos.copy(), env.t) for h in HANDS}, off=set(), events=[])
@@ -572,6 +608,8 @@ def main() -> None:
             flow.reset_practice()             # in ⓪ practice: next student, fresh checklist
 
     def mode_line() -> str | None:
+        if flow and flow.step == "intro":
+            return "시범 없이 혼자 연습(강화학습 306시간)한 AI가 조종 중"
         if flow and flow.step == "practice":
             return f"{flow.group} 연습 중 (저장 안 함)"
         if flow and policy is None:
@@ -631,13 +669,17 @@ def main() -> None:
                 if flow is None or flow.start_training():
                     trainer.start()
                     learn_open = True
-            if flow and key_next and state in ("waiting", "finished") and not trainer.busy():
+            if flow and key_next and (state in ("waiting", "finished") or flow.step in ("intro", "practice"))                     and not trainer.busy():                # intro / practice: B also works in the middle of a round
                 went = flow.next()
                 if went == "train":
                     trainer.start()
                     learn_open = True
-                elif went == "demo":
-                    new_episode()                      # practice over: fresh layout, recording on
+                elif went in ("practice", "demo"):
+                    if policy is not None and policy is intro_rl.get("policy"):
+                        policy, policy_path = None, None   # intro over: people drive from now on
+                    if INTRO_SEED_BASE <= seed < INTRO_SEED_BASE + 1000:
+                        seed = demo_seed - 1               # back to the group's own layouts
+                    new_episode()                      # fresh layout (recording on from the demos)
             key_train = key_next = False
             if flow and trainer.state == "error" and flow.step in ("train", "retrain"):
                 flow.on_trained(False)
@@ -649,31 +691,53 @@ def main() -> None:
                 print("retrained", trainer.result, flush=True)
                 if flow:
                     flow.on_trained(True)
-                    if seed < PRACTICE_SEED_BASE:        # AI rounds use unseen practice layouts
-                        seed = PRACTICE_SEED_BASE + 100
+                    if not PRACTICE_SEED_BASE + 100 <= seed < INTRO_SEED_BASE:   # AI rounds: their own unseen layouts
+                        seed = PRACTICE_SEED_BASE + 100      # (visit demo seeds 4,000,000+ used to slip through)
                     new_episode()                        # fresh layout, arms handed to the AI
 
+            intro = bool(flow and flow.step == "intro")
+            if intro and policy is None and "policy" in intro_rl:
+                policy, policy_path = intro_rl["policy"], args.compare_rl
+                for h in HANDS:
+                    controllers[h] = "ai"
+            if intro and state == "finished" and finished_at is not None and t_start - finished_at > INTRO_NEXT_S:
+                new_episode()
+                key_start = True
+            if flow and flow.step != prev_step:
+                if flow.step in ("compare1", "compare2", "result"):
+                    learn_open = False                 # the comparison / result is the screen now
+                if flow.step in ("compare1", "compare2") and trainer.state == "done":
+                    trainer.state = "idle"             # its numbers are on the comparison screen
+                prev_step = flow.step
+
             if autopilot:                              # test: press the keys a person would press
-                if flow.step == "practice":
+                step_t = autopilot_t.setdefault(flow.step, t_start)
+                if flow.step == "intro":
+                    if policy is not None and env.t > 3.0:
+                        key_next = True                    # watched the RL AI for 3 s (B in the middle of a round)
+                    elif state == "waiting" and policy is not None:
+                        key_start = True
+                elif flow.step == "practice":
                     key_next = True
+                elif flow.step in ("compare1", "compare2"):
+                    if t_start - step_t > 4.0:
+                        key_next = True                    # watched the comparison
                 elif state == "finished":
                     if flow.step == "demo" and flow.demos_ok >= flow.target_demos:
                         key_train = True
                     elif flow.step == "ai" and flow.takeovers >= 1 and flow.trainings < 2:
                         key_train = True
-                    elif flow.step == "ai" and flow.trainings >= 2:
-                        key_next = True
                     elif flow.step != "result":
                         new_episode()
                         autopilot.reset()
-                elif state == "waiting" and not trainer.busy():
+                elif state == "waiting" and not trainer.busy() and flow.step not in ("result",):
                     key_start = True
                     autopilot.reset()
                 if flow.step == "result":
                     result_shown_at = result_shown_at or t_start
                     if t_start - result_shown_at > 3.0:
                         break
-            if policy is not None and state in ("running", "stalled"):
+            if policy is not None and state in ("running", "stalled") and not intro:
                 for h in HANDS:                    # takeover: the person grabs this arm for the rest of the episode
                     hand = frame.hand(h)
                     wants = hand.connected and (float(np.hypot(*hand.stick)) > TAKEOVER_STICK
@@ -696,8 +760,10 @@ def main() -> None:
             ready = all(connected.values()) or policy is not None
             if trainer and trainer.busy():
                 start = False                      # no new episode while the AI is studying
-            if flow and flow.step == "result":
-                start = False                      # the result screen stays until the operator closes it
+            if flow and flow.step in ("result", "compare1", "compare2"):
+                start = False                      # these screens stay until the operator moves on (B held / N)
+            if intro and policy is None:
+                start = False                      # the RL AI is still loading
             if state == "waiting" and ready and start:
                 learn_open = False                     # play: the 3D view stays clear
                 if trainer and trainer.state in ("done", "error"):
@@ -720,7 +786,8 @@ def main() -> None:
 
             # Advance physics by real elapsed time (rendering runs ~35-45 fps; control is 50 Hz).
             # AI rounds run slower than real time (same decisions, easier to follow) until a person joins.
-            speed = args.ai_speed if (policy is not None and all(c == "ai" for c in controllers.values())) else 1.0
+            speed = args.ai_speed if (policy is not None and all(c == "ai" for c in controllers.values())
+                                      and not intro) else 1.0
             acc = min(acc + (t_start - t_prev) * speed, 3 * CONTROL_DT) if state == "running" else 0.0
             t_prev = t_start
             n_steps = 0
@@ -750,7 +817,7 @@ def main() -> None:
                             flow.mark_practice("lift")
                         if abs(tg.pitch) > np.deg2rad(15) or abs(tg.twist) > np.deg2rad(20):
                             flow.mark_practice("wrist")
-                if policy is not None and not info.done:        # an AI arm that stopped moving: ask for help
+                if policy is not None and not info.done and not intro:   # an AI arm that stopped: ask for help
                     for h in HANDS:
                         if controllers[h] != "ai" or h in stall["off"] or info.in_tray[h]:
                             continue
@@ -776,6 +843,7 @@ def main() -> None:
                     fell = any(env.cube_pos(h)[2] < -0.05 for h in HANDS)
                     result = "실패: 큐브가 떨어졌어요" if fell else "실패: 시간 초과"
                 state = "finished"
+                finished_at = t_start
                 if writer and flow and not flow.recording:
                     writer.start()                     # ⓪ practice: nothing is saved
                 elif writer:
@@ -795,31 +863,40 @@ def main() -> None:
                 print("episode", episodes[-1], flush=True)
 
             renderer.update_scene(env.data, camera="demo_cam")
-            panel = start_panel(state, connected, provider.source, ai=policy is not None)
+            panel = (intro_panel(state, policy is not None) if intro else
+                     start_panel(state, connected, provider.source, ai=policy is not None))
             if trainer and trainer.state != "idle" and state in ("waiting", "finished"):
                 panel = train_panel(trainer)
             if flow and flow.step == "result":
                 panel = result_panel(flow.group, trainer.history, reference)
             if state == "stalled" and stall["hand"]:
                 panel = stall_panel(stall["hand"])
+            if flow and flow.step in ("compare1", "compare2"):
+                panel = None                           # the message line is the step hint
             if t_start - notice_t >= 0.5:            # reads a small status file; twice a second is plenty
                 notice, notice_t = provider.status_line(), t_start
             compare_rows = None
-            at_result = bool(flow and flow.step == "result")
-            if at_result and not was_result:
-                learn_open = False                     # the result opens on the side-by-side comparison
-            was_result = at_result
-            if compare is not None and state != "running" and trainer and trainer.history \
-                    and ((at_result and not learn_open) or (compare_open and not at_result)):
+            step_now = flow.step if flow else None
+            if step_now in ("compare1", "compare2"):
+                show_compare = not learn_open          # Y still opens the learning screen over it
+            else:
+                show_compare = compare_open            # C: RL + first AI + latest AI, any time between rounds
+            if compare is not None and state != "running" and trainer and trainer.history and show_compare:
                 hist = trainer.history
                 rl_ref = next((ref_rate_of(r) for r in reference if "단계별" in r["label"]), None)
-                specs = [{"key": "rl", "label": "강화학습 306시간 연습 (시범 없이)", "color": (255, 120, 110),
-                          "path": args.compare_rl, "measured": rl_ref},
-                         {"key": "il0", "label": "모방학습 · " + hist[0]["label"], "color": (120, 200, 255),
-                          "path": Path(hist[0]["policy"]), "measured": float(hist[0]["success_rate"])}]
-                if len(hist) >= 2 and hist[-1]["policy"] != hist[0]["policy"]:
-                    specs.append({"key": "il1", "label": "다시 배운 AI · " + hist[-1]["label"], "color": (130, 220, 150),
-                                  "path": Path(hist[-1]["policy"]), "measured": float(hist[-1]["success_rate"])})
+                rl = {"key": "rl", "label": "강화학습 306시간 연습 (시범 없이)", "color": (255, 120, 110),
+                      "path": args.compare_rl, "measured": rl_ref}
+                il = lambda r, key, prefix, col: {"key": key, "label": prefix + r["label"], "color": col,
+                                                  "path": Path(r["policy"]), "measured": float(r["success_rate"])}
+                if step_now == "compare1":             # after the first training: RL vs the taught AI
+                    specs = [rl, il(hist[-1], "il_new", "모방학습 · ", (120, 200, 255))]
+                elif step_now == "compare2" and len(hist) >= 2:   # after retraining: before vs after
+                    specs = [il(hist[-2], "il_before", "다시 공부 전 · ", (120, 200, 255)),
+                             il(hist[-1], "il_after", "다시 공부 후 · ", (130, 220, 150))]
+                else:
+                    specs = [rl, il(hist[0], "il0", "모방학습 · ", (120, 200, 255))]
+                    if len(hist) >= 2 and hist[-1]["policy"] != hist[0]["policy"]:
+                        specs.append(il(hist[-1], "il1", "다시 배운 AI · ", (130, 220, 150)))
                 compare.set_runners(specs)
                 compare_rows = (compare.update(), compare.k)
             if display is not None:

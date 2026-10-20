@@ -3,8 +3,8 @@ import json
 from teachabot.visit import STEP_LABEL, VisitFlow, load_reference
 
 
-def test_visit_flow_goes_demo_train_ai_retrain_result():
-    f = VisitFlow("1조", target_demos=2, practice=False)
+def test_visit_flow_goes_demo_train_compare_ai_retrain_compare_result():
+    f = VisitFlow("1조", target_demos=2, practice=False, intro=False)
     assert f.step == "demo" and not f.can_train() and f.next() is None    # nothing to learn yet
     f.on_episode_saved("demo", False)
     assert not f.can_train()                                             # failed demos are not learned
@@ -12,19 +12,20 @@ def test_visit_flow_goes_demo_train_ai_retrain_result():
     assert f.can_train() and "1/2" in f.hint()
     assert f.next() == "train" and f.step == "train"
     f.on_trained(True)
+    assert f.step == "compare1" and "강화학습" in f.hint() and f.next() == "ai"   # RL vs the new AI first
     assert f.step == "ai" and f.ai_mode and not f.can_train()            # no correction yet
     f.on_episode_saved("takeover", False)
     assert f.can_train() and f.start_training() and f.step == "retrain"
     f.on_trained(True)
-    assert f.step == "ai" and f.takeovers == 0 and f.trainings == 2
+    assert f.step == "compare2" and f.takeovers == 0 and f.trainings == 2   # before vs after retraining
     assert f.next() == "result" and f.step == "result"
     s = f.summary()
     assert s["demos_ok"] == 1 and s["demos_tried"] == 2 and s["takeovers_total"] == 1
-    assert [x["step"] for x in s["steps"]] == ["demo", "train", "ai", "retrain", "ai", "result"]
+    assert [x["step"] for x in s["steps"]] == ["demo", "train", "compare1", "ai", "retrain", "compare2", "result"]
 
 
 def test_failed_training_returns_to_previous_step():
-    f = VisitFlow("2조", practice=False)
+    f = VisitFlow("2조", practice=False, intro=False)
     f.on_episode_saved("demo", True)
     f.start_training()
     f.on_trained(False)
@@ -32,11 +33,11 @@ def test_failed_training_returns_to_previous_step():
 
 
 def test_banner_marks_current_step_and_sessions_include_base():
-    f = VisitFlow("3조", base_sessions=("s01",), practice=False)
+    f = VisitFlow("3조", base_sessions=("s01",), practice=False, intro=False)
     assert f.sessions() == ["s01", "3조"]
     states = dict(f.banner())
     assert states[STEP_LABEL["demo"]] == "current" and states[STEP_LABEL["result"]] == "todo"
-    assert STEP_LABEL["practice"] not in states
+    assert STEP_LABEL["practice"] not in states and STEP_LABEL["intro"] not in states
 
 
 def test_reference_lines_need_a_source(tmp_path):
@@ -64,7 +65,7 @@ def test_live_trainer_learns_only_listed_sessions(tmp_path):
 
 def test_practice_comes_first_is_not_recorded_and_resets_per_student():
     from teachabot.visit import PRACTICE_ITEMS
-    f = VisitFlow("4조")
+    f = VisitFlow("4조", intro=False)
     assert f.step == "practice" and not f.recording and dict(f.banner())[STEP_LABEL["practice"]] == "current"
     for k, _ in PRACTICE_ITEMS[:-1]:
         f.mark_practice(k)
@@ -108,3 +109,13 @@ def test_visit_demo_layouts_are_per_group_and_away_from_other_ranges():
     for s in (a, b):
         assert VISIT_DEMO_SEED_BASE <= s < VISIT_DEMO_SEED_BASE + 1_000_000      # not s01 (0-10), test (1e6),
         assert s > PRACTICE_SEED_BASE + 1_000                                   # tuning (2e6), AI rounds (3e6)
+
+
+def test_visit_starts_by_watching_the_ai_from_before_imitation():
+    f = VisitFlow("5조")
+    assert f.step == "intro" and not f.recording and "B 길게" in f.hint()
+    assert [lab for lab, _ in f.banner()][:3] == [STEP_LABEL["intro"], STEP_LABEL["practice"], STEP_LABEL["demo"]]
+    assert f.next() == "practice" and f.step == "practice" and not f.recording
+    assert f.next() == "demo" and f.recording
+    g = VisitFlow("6조", practice=False)
+    assert g.next() == "demo"                                            # no practice: straight to demos
