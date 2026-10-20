@@ -23,10 +23,32 @@ ROOT = Path(__file__).resolve().parents[3]
 POLICY_DIR = ROOT / "data" / "policies"
 
 
+def load_session_demos(demo_dir: Path, sessions: list[str] | None) -> list:
+    """Demos + takeovers of the given sessions; "name:k" keeps only the first k full demos of
+    that session (recording order). None = everything."""
+    if sessions is None:
+        return load_demos(demo_dir, kinds=("demo", "takeover"))
+    limits = {}
+    for item in sessions:
+        name, _, k = item.partition(":")
+        limits[name] = int(k) if k else None
+    demos = load_demos(demo_dir, kinds=("demo", "takeover"), sessions=list(limits))
+    out, used = [], {}
+    for d in demos:
+        name, k = d.meta["session"], limits[d.meta["session"]]
+        if k is not None:
+            if d.kind != "demo" or used.get(name, 0) >= k:
+                continue
+            used[name] = used.get(name, 0) + 1
+        out.append(d)
+    return out
+
+
 class LiveTrainer:
     def __init__(self, demo_dir: Path = DEMO_DIR, episodes: int = 40, workers: int = 10,
                  cfg: HandBCConfig | None = None, sessions: list[str] | None = None, label_prefix: str = ""):
-        """`sessions`: only these session codes are learned from (visit mode: base + group)."""
+        """`sessions`: only these session codes are learned from (visit mode: base + group).
+        "s01:5" means the first 5 full demonstrations of s01 in recording order (a fixed base)."""
         self.demo_dir, self.episodes, self.workers = demo_dir, episodes, workers
         self.sessions, self.label_prefix = sessions, label_prefix
         self.cfg = cfg or HandBCConfig()
@@ -46,8 +68,11 @@ class LiveTrainer:
                                  "cubes_mean": d["cubes_mean"], "episodes": d.get("episodes"),
                                  "policy": str(policy_path)})
 
+    def _load(self) -> list:
+        return load_session_demos(self.demo_dir, self.sessions)
+
     def data_counts(self) -> tuple[int, int]:
-        demos = load_demos(self.demo_dir, kinds=("demo", "takeover"), sessions=self.sessions)
+        demos = self._load()
         return sum(d.kind == "demo" for d in demos), sum(d.kind == "takeover" for d in demos)
 
     def busy(self) -> bool:
@@ -64,7 +89,7 @@ class LiveTrainer:
 
     def _run(self) -> None:
         try:
-            demos = load_demos(self.demo_dir, kinds=("demo", "takeover"), sessions=self.sessions)
+            demos = self._load()
             if not demos:
                 raise ValueError("배울 시범이 없습니다 (성공한 판이 필요해요)")
             n_demo = sum(d.kind == "demo" for d in demos)
@@ -77,7 +102,10 @@ class LiveTrainer:
             self.state = "evaluating"
             self.message = f"처음 보는 배치 {self.episodes}판으로 시험 중"
             res = evaluate_policy(path, episodes=self.episodes, workers=self.workers)
-            row = {"label": self.label_prefix + f"시범 {n_demo}" + (f" + 개입 {n_take}" if n_take else ""), **res.summary(),
+            group = self.sessions[-1].partition(":")[0] if self.sessions else None
+            n_base = sum(d.kind == "demo" and d.meta["session"] != group for d in demos) if group else 0
+            label = self.label_prefix + f"시범 {n_demo - n_base}" + (f" + 개입 {n_take}" if n_take else "")                 + (f" (+기본 {n_base})" if n_base else "")
+            row = {"label": label, "n_base_demos": n_base, **res.summary(),
                    "policy": str(path), "n_demos": n_demo, "n_takeovers": n_take,
                    "train_s": pol.meta["train_s"], "total_s": round(time.perf_counter() - self.t_started, 1)}
             path.with_suffix(".json").write_text(json.dumps({**row, "eval_episodes": res.episodes, "bc": pol.meta},

@@ -76,3 +76,26 @@ def test_practice_comes_first_is_not_recorded_and_resets_per_student():
     assert f.next() == "demo" and f.step == "demo" and f.recording
     f.mark_practice("move")                              # ignored outside practice
     assert not f.practice_done
+
+
+def test_base_session_can_be_limited_to_its_first_demos(tmp_path):
+    import numpy as np
+    from teachabot.aloha.env import OBS_DIM
+    from teachabot.learning.demos import DemoWriter
+    from teachabot.learning.live import LiveTrainer, load_session_demos
+    w = DemoWriter("s01", "test", tmp_path)
+    for i in range(4):
+        w.start()
+        w.add(np.full(OBS_DIM, i), np.zeros(12))
+        w.finish(i, True, 0.1)
+    w.start()
+    w.add(np.zeros(OBS_DIM), np.zeros(12), (False, True))
+    w.finish(9, False, 0.1, in_tray={"left": False, "right": True}, kind="takeover")
+    g = DemoWriter("1조", "test", tmp_path)
+    g.start()
+    g.add(np.zeros(OBS_DIM), np.zeros(12))
+    g.finish(0, True, 0.1)
+    picked = load_session_demos(tmp_path, ["s01:2", "1조"])
+    assert [(d.meta["session"], d.meta["layout_seed"]) for d in picked] == [("s01", 0), ("s01", 1), ("1조", 0)]
+    assert LiveTrainer(tmp_path, sessions=["s01:2", "1조"]).data_counts() == (3, 0)
+    assert LiveTrainer(tmp_path, sessions=["s01"]).data_counts() == (4, 1)
