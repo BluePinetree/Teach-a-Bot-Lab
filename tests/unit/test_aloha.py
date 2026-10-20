@@ -149,6 +149,26 @@ def test_teleop_motion_height_follows_joycon_and_holds():
         TeleopMapper(TeleopSettings(height_source="nope"))
 
 
+def test_teleop_tilt_height_bends_relative_to_the_press():
+    m = TeleopMapper(TeleopSettings(wrist_source="off", height_source="tilt"), _cal())
+
+    def run(deg, held, frames=60):
+        a = (math.sin(math.radians(deg)), 0.0, math.cos(math.radians(deg)))   # front down = +forward
+        for _ in range(frames):
+            c = m.commands(_frame(_hand("left", accel=a, buttons={"shoulder": held}), _hand("right")), CONTROL_DT)
+        return c["left"].vz
+
+    assert run(10, held=False) == 0.0              # released: holds the height whatever the angle
+    assert run(10, held=True, frames=1) == 0.0     # the press angle (10 deg) is the reference
+    assert run(12, held=True) == 0.0               # inside the 4 deg deadzone
+    assert run(20, held=True) == pytest.approx(-0.5 * 6 / 16, abs=0.02)   # 10 deg down: slow down
+    assert run(40, held=True) == pytest.approx(-0.5, abs=1e-6)            # full bend: capped
+    assert run(-10, held=True) == pytest.approx(0.5, abs=1e-6)            # bent up: up
+    assert run(-10, held=False) == 0.0 and m.tilt_ref["left"] is None
+    m2 = TeleopMapper(TeleopSettings(wrist_source="off", height_source="tilt"))   # no calibration: buttons
+    assert m2.height_mode("left") == "button"
+
+
 def test_teleop_wrist_angles_from_gravity():
     m = TeleopMapper(TeleopSettings(wrist_deadzone_deg=0.0), _cal())
     a = math.radians(20)

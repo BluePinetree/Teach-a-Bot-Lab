@@ -24,7 +24,7 @@ from .scene import HANDS
 
 MOVE_SOURCES = ("stick", "tilt", "point")   # webcam / stroke: shelved (D9)
 WRIST_SOURCES = ("imu", "off")
-HEIGHT_SOURCES = ("button", "motion")       # motion: move the Joy-Con up/down (D18)
+HEIGHT_SOURCES = ("button", "tilt", "motion")   # tilt: hold L/R + bend the wrist; motion: shelved (D18)
 
 
 @dataclass
@@ -33,8 +33,13 @@ class TeleopSettings:
     wrist_source: str = "imu"
     wrist_gain: float = 1.0          # gripper angle per Joy-Con angle
     wrist_deadzone_deg: float = 4.0
-    height_source: str = "button"    # button: hold L/R to lower, release to rise; motion: hold L/R and move up/down
+    height_source: str = "button"    # button: hold L/R to lower, release to rise; tilt / motion: see HEIGHT_SOURCES
     height_gain: float = 1.0         # gripper speed per Joy-Con speed (motion)
+    # tilt: while L/R is held, bending the wrist from where it was at the press moves the gripper;
+    # front of the Joy-Con down = down. Speed grows from 0 at the deadzone to tilt_max_vz at tilt_full_deg.
+    tilt_deadzone_deg: float = 4.0
+    tilt_full_deg: float = 20.0
+    tilt_max_vz: float = 0.5         # fraction of MAX_VZ (0.15 m/s): the 13 cm range takes ~1 s at full bend
 
 
 def _unit(v) -> np.ndarray:
@@ -81,9 +86,28 @@ class TeleopMapper:
         self.mapper = MotionMapper(self.cal)
         self.wrist = WristFromTilt(self.cal, self.mapper)
         self.last_angles = {h: (0.0, 0.0) for h in HANDS}
+        self.tilt_ref: dict[str, float | None] = {h: None for h in HANDS}   # forward angle at the L/R press
+        self.last_bend = {h: 0.0 for h in HANDS}                           # degrees, for the HUD
 
     def wrist_ready(self, hand: str) -> bool:
         return self.settings.wrist_source == "imu" and self.wrist.ready(hand)
+
+    def height_mode(self, hand: str) -> str:
+        """The height source in effect: tilt needs the hand's calibration, else buttons."""
+        s = self.settings.height_source
+        return "button" if s == "tilt" and not self.wrist.ready(hand) else s
+
+    def _tilt_vz(self, hand: str, held: bool, fwd: float) -> float:
+        if not held:
+            self.tilt_ref[hand], self.last_bend[hand] = None, 0.0
+            return 0.0
+        if self.tilt_ref[hand] is None:
+            self.tilt_ref[hand] = fwd
+        bend = math.degrees(fwd - self.tilt_ref[hand])
+        self.last_bend[hand] = bend
+        s = self.settings
+        frac = (abs(bend) - s.tilt_deadzone_deg) / (s.tilt_full_deg - s.tilt_deadzone_deg)
+        return -math.copysign(max(0.0, min(1.0, frac)) * s.tilt_max_vz, bend)   # front down = down
 
     def _shape(self, angle: float, limit: float) -> float:
         dz = math.radians(self.settings.wrist_deadzone_deg)
@@ -102,11 +126,16 @@ class TeleopMapper:
             else:
                 move = self.mapper.stick(self.settings.move_source, h, hand, dt)
             pitch = twist = 0.0
-            if self.wrist_ready(h) and hand.accel is not None:
-                fwd, right = self.wrist.angles(h, hand.accel, dt)
+            mode = self.height_mode(h)
+            fwd = None
+            if (self.wrist_ready(h) or mode == "tilt") and hand.accel is not None:
+                fwd, right = self.wrist.angles(h, hand.accel, dt)       # once per frame: it low-passes
                 self.last_angles[h] = (fwd, right)
-                pitch, twist = self._shape(fwd, PITCH_LIMIT), self._shape(right, TWIST_LIMIT)
-            if self.settings.height_source == "motion":
+                if self.wrist_ready(h):
+                    pitch, twist = self._shape(fwd, PITCH_LIMIT), self._shape(right, TWIST_LIMIT)
+            if mode == "tilt":
+                vz = self._tilt_vz(h, hand.buttons["shoulder"] and fwd is not None, fwd or 0.0)
+            elif mode == "motion":
                 v = float(frame.meta.get("vertical_speed", {}).get(h, 0.0))
                 vz = max(-1.0, min(1.0, self.settings.height_gain * v / MAX_VZ))   # holds height when still
             else:
