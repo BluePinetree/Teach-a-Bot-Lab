@@ -28,25 +28,36 @@ class EvalResult:
 
     def summary(self) -> dict:
         ok = [e["time"] for e in self.episodes if e["success"]]
+        lifted = [e.get("lifted", 0) for e in self.episodes]
         return {"episodes": len(self.episodes), "success_rate": round(self.success_rate, 3),
+                "lifted_mean": round(float(np.mean(lifted)), 3),
                 "cubes_mean": round(self.cubes_mean, 3), "success_time_mean": round(float(np.mean(ok)), 2) if ok else None,
                 "wall_s": round(self.wall_s, 1)}
 
 
 def run_episode(policy, env, layout_seed: int) -> dict:
     obs = env.reset(layout_seed)
+    if hasattr(policy, "reset"):
+        policy.reset()
+    lifted = {"left": False, "right": False}
     while True:
         obs, info = env.step(action_to_commands(policy(obs)))
+        for h in lifted:                       # partial skill: did this hand ever lift its cube?
+            lifted[h] |= bool(env.targets[h].grip and env.cube_pos(h)[2] > 0.05)
         if info.done:
             return {"layout_seed": layout_seed, "success": bool(info.success), "time": round(info.time, 2),
-                    "cubes": int(sum(info.in_tray.values()))}
+                    "cubes": int(sum(info.in_tray.values())), "lifted": int(sum(lifted.values()))}
 
 
 def _init_worker(policy_path: str, time_limit: float) -> None:
     global _POLICY, _ENV
     from teachabot.aloha.env import AlohaSortEnv
-    from teachabot.learning.bc import NumpyPolicy
-    _POLICY = NumpyPolicy.load(Path(policy_path))
+    if str(policy_path).endswith(".zip"):          # PPO checkpoint (RL baseline)
+        from teachabot.learning.rl_policy import RLPolicy
+        _POLICY = RLPolicy(Path(policy_path))
+    else:
+        from teachabot.learning.bc import NumpyPolicy
+        _POLICY = NumpyPolicy.load(Path(policy_path))
     _ENV = AlohaSortEnv(time_limit=time_limit)
 
 

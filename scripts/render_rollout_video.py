@@ -9,7 +9,6 @@ simulated time). The result card at the end of each episode is the real outcome.
 from __future__ import annotations
 
 import argparse
-import pickle
 import sys
 from pathlib import Path
 
@@ -25,33 +24,9 @@ from teachabot.aloha.gym_env import action_to_commands  # noqa: E402
 from teachabot.aloha.scene import HANDS  # noqa: E402
 from teachabot.aloha.teleop import TeleopMapper, TeleopSettings  # noqa: E402
 from teachabot.aloha_app import H, W, Hud  # noqa: E402
+from teachabot.learning.rl_policy import RLPolicy  # noqa: E402
 
 FPS = 30
-
-
-class RLPolicy:
-    """A PPO checkpoint from scripts/train_rl.py, run exactly as in its evaluation:
-    normalised observation, deterministic action held for `repeat` control steps."""
-
-    def __init__(self, ckpt: Path, repeat: int = 5):
-        from stable_baselines3 import PPO
-        self.model = PPO.load(ckpt, device="cpu")
-        vn_path = ckpt.with_name(ckpt.name.replace("ckpt_", "vecnorm_").replace(".zip", ".pkl"))
-        if ckpt.name == "final.zip":
-            vn_path = ckpt.with_name("vecnorm_final.pkl")
-        with open(vn_path, "rb") as f:
-            self.vecnorm = pickle.load(f)
-        self.repeat, self.k, self.a = repeat, 0, None
-
-    def reset(self):
-        self.k, self.a = 0, None
-
-    def __call__(self, obs):
-        if self.k % self.repeat == 0:
-            self.a, _ = self.model.predict(self.vecnorm.normalize_obs(obs[None].astype(np.float32)), deterministic=True)
-            self.a = self.a[0]
-        self.k += 1
-        return self.a
 
 
 def main() -> None:
