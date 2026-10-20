@@ -181,3 +181,38 @@ def test_live_trainer_retrains_and_evaluates(scripted_demos, tmp_path):
     assert t.progress["eval_done"] == t.progress["eval_total"] == 2
     assert [w.shape for w in t.live_weights][0][0] == HAND_OBS_DIM
     assert t.pending_policy == Path(t.result["policy"])
+
+
+def test_compare_view_runs_policies_side_by_side_on_the_same_layout(scripted_demos, tmp_path, monkeypatch):
+    import time as _t
+    from teachabot import compare_view as cvm
+    monkeypatch.setattr(cvm, "COMPARE_TIME_LIMIT", 0.4)
+    monkeypatch.setattr(cvm, "HOLD_S", 0.0)
+    pol = train_hand_bc(scripted_demos, HandBCConfig(iters=100))
+    pol.save(tmp_path / "a.npz")
+    pol.save(tmp_path / "b.npz")
+    view = cvm.CompareView()
+    view.set_runners([{"key": "a", "label": "A", "color": (1, 2, 3), "path": tmp_path / "a.npz", "measured": 0.1},
+                      {"key": "b", "label": "B", "color": (1, 2, 3), "path": tmp_path / "b.npz"},
+                      {"key": "c", "label": "C", "color": (1, 2, 3), "path": tmp_path / "missing.npz"}])
+    rows = view.update()
+    assert rows[2][2] == "정책 파일 없음" and rows[2][1] is None                # shows its error ...
+    assert rows[0][1].shape == (cvm.PANE_H, cvm.PANE_W, 3)
+    for _ in range(200):                                                 # ... and does not hold the others up
+        view.update()
+        _t.sleep(0.01)
+        if view.runners[0].shown:
+            break
+    assert view.runners[0].shown == view.runners[1].shown >= 1 and view.runners[2].shown == 0
+    view.set_runners(view_specs := [{"key": k, "label": k, "color": (1, 2, 3), "path": tmp_path / f"{k}.npz"}
+                                    for k in ("a", "b")])
+    t0 = _t.perf_counter()
+    while view.k < 2 and _t.perf_counter() - t0 < 30:
+        rows = view.update()
+        _t.sleep(0.01)
+    a, b = view.runners
+    assert view.k >= 2 and a.shown >= 2 and b.shown == a.shown          # same layouts, finished together
+    assert a.results == b.results                                      # same policy, same layout -> same outcome
+    assert rows[0][1].shape == (cvm.PANE_H, cvm.PANE_W, 3)
+    view.set_runners(view_specs)                                       # unchanged specs keep the tally
+    assert a.shown >= 2

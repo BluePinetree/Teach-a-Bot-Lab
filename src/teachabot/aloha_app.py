@@ -62,6 +62,8 @@ NEXT_HOLD_S = 1.0                # visit: hold B (right Joy-Con) this long = nex
 STALL_S, STALL_M = 1.5, 0.01     # an AI arm whose target moves < 1 cm in 1.5 s (sim) is "stuck"
 VIDEO_FPS = 30
 VISIT_REFERENCE = ROOT / "config" / "visit_reference.json"
+# the RL baseline shown at the visits (user decision 2026-10-20: the 306-hour checkpoint, dense reward)
+COMPARE_RL = ROOT / "data" / "rl_runs" / "dense_20261019_184623" / "ckpt_11001856.zip"
 
 
 class _NeutralProvider(InputProvider):
@@ -321,6 +323,12 @@ class Hud:
                    fill=(225, 228, 236))
 
 
+def ref_rate_of(line: dict) -> float | None:
+    """Success rate written in a reference line ("성공 22% · …")."""
+    from teachabot.aloha_panels import ref_rate
+    return ref_rate(line.get("value", ""))
+
+
 def start_panel(state: str, connected: dict, source: str, ai: bool = False):
     if state not in ("waiting", "paused"):
         return None
@@ -404,6 +412,10 @@ def main() -> None:
     ap.add_argument("--ui", choices=("panels", "classic"), default="panels",
                     help="panels = 1920x1080 layout with Joy-Con drawings and the learning screen (docs/UI_REVIEW.md); "
                          "classic = the earlier 1280x720 overlay screen")
+    ap.add_argument("--sharp-3d", choices=("on", "off"), default="on",
+                    help="window larger than 1920x1080: re-render the 3D view at window size (on) or just scale it (off, faster)")
+    ap.add_argument("--compare-rl", type=Path, default=COMPARE_RL,
+                    help="panels: RL checkpoint for the side-by-side comparison (C key; shown at the visit result)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--check", action="store_true", help="noon checkpoint checklist")
     ap.add_argument("--screenshot", type=Path, help="render a few seconds with no input, save, exit")
@@ -510,10 +522,18 @@ def main() -> None:
         from teachabot.display import Display
         if args.ui == "panels":
             from teachabot.aloha_panels import CH, CW, SIM_H, SIM_W, SIM_X, SIM_Y
-            display = Display(WINDOW, (CW, CH), env.model, (SIM_X, SIM_Y, SIM_W, SIM_H))
+            display = Display(WINDOW, (CW, CH), env.model, (SIM_X, SIM_Y, SIM_W, SIM_H),
+                              sharp_3d=args.sharp_3d == "on")
         else:
             display = Display(WINDOW, (W, H))
     learn_open = False                        # panels: the learning screen over the 3D view (Y / L)
+    compare_open = False                      # panels: RL vs imitation side by side (C; default at the visit result)
+    was_result = False
+    compare = None
+    if args.ui == "panels" and (flow or policy is not None or args.policy):
+        from teachabot.compare_view import CompareView
+        compare = CompareView()
+        compare.preload(args.compare_rl)          # the PPO checkpoint takes ~5 s to load
     display_ms = None
     stall = {"hand": None, "anchor": {}, "off": set(), "events": []}
 
@@ -783,6 +803,24 @@ def main() -> None:
                 panel = stall_panel(stall["hand"])
             if t_start - notice_t >= 0.5:            # reads a small status file; twice a second is plenty
                 notice, notice_t = provider.status_line(), t_start
+            compare_rows = None
+            at_result = bool(flow and flow.step == "result")
+            if at_result and not was_result:
+                learn_open = False                     # the result opens on the side-by-side comparison
+            was_result = at_result
+            if compare is not None and state != "running" and trainer and trainer.history \
+                    and ((at_result and not learn_open) or (compare_open and not at_result)):
+                hist = trainer.history
+                rl_ref = next((ref_rate_of(r) for r in reference if "단계별" in r["label"]), None)
+                specs = [{"key": "rl", "label": "강화학습 306시간 연습 (시범 없이)", "color": (255, 120, 110),
+                          "path": args.compare_rl, "measured": rl_ref},
+                         {"key": "il0", "label": "모방학습 · " + hist[0]["label"], "color": (120, 200, 255),
+                          "path": Path(hist[0]["policy"]), "measured": float(hist[0]["success_rate"])}]
+                if len(hist) >= 2 and hist[-1]["policy"] != hist[0]["policy"]:
+                    specs.append({"key": "il1", "label": "다시 배운 AI · " + hist[-1]["label"], "color": (130, 220, 150),
+                                  "path": Path(hist[-1]["policy"]), "measured": float(hist[-1]["success_rate"])})
+                compare.set_runners(specs)
+                compare_rows = (compare.update(), compare.k)
             if display is not None:
                 sim_rgb, sim_hi = display.sim_render(env.data, renderer)
             else:
@@ -800,7 +838,7 @@ def main() -> None:
                            learn_open=learn_open and state != "running", reference=reference, episodes=episodes,
                            flow=flow, state=state, time_limit=env.time_limit,
                            result_sheet=(flow.group, trainer.history, reference) if (flow and flow.step == "result")
-                           else None)
+                           else None, compare=compare_rows)
             # record only while something happens (not the idle start screen), so a window left
             # open does not fill the disk; the video simply skips the waiting time
             recording = (state != "waiting" or (trainer is not None and trainer.state != "idle")
@@ -830,6 +868,8 @@ def main() -> None:
                 key_next = True
             if key in (ord("l"), ord("L")):
                 key_learn = True
+            if key in (ord("c"), ord("C")) and compare is not None:
+                compare_open = not compare_open
             if key in (ord("f"), ord("F")) and not headless:
                 display.toggle_fullscreen()
             spent = time.perf_counter() - t_start

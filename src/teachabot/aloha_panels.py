@@ -351,7 +351,7 @@ class PanelUI:
                               ("stick", "W A S D", "이동")],
                      "right": [("shoulder", "오른 Shift", "내리기"), ("grip", "오른 Ctrl", "집기"),
                                ("stick", "방향키", "이동"), ("a", "Space", "시작"), ("x", "T", "다시 학습"),
-                               ("y", "L", "학습 화면"), ("home", "R", "새 판"), ("", "N", "다음 단계"),
+                               ("y", "L", "학습 화면"), ("", "C", "비교 화면"), ("home", "R", "새 판"), ("", "N", "다음 단계"),
                                ("", "F", "전체 화면"), ("", "Esc", "끝내기")]}
 
     def _base_layer(self, key, mapper, source: str, trainer_on: bool) -> np.ndarray:
@@ -386,7 +386,8 @@ class PanelUI:
              history: list[dict] | None = None, guide_text: str | None = None, notice: str | None = None,
              steps=None, alert_hand: str | None = None, *, trainer=None, policy=None, policy_path=None,
              learn_open: bool = False, reference: list[dict] | None = None, episodes: list[dict] | None = None,
-             flow=None, state: str = "running", time_limit: float | None = None, result_sheet=None) -> np.ndarray:
+             flow=None, state: str = "running", time_limit: float | None = None, result_sheet=None,
+             compare=None) -> np.ndarray:
         key = (source, tuple(mapper.height_mode(h) for h in HANDS), tuple(mapper.wrist_ready(h) for h in HANDS),
                trainer is not None, flow is not None)
         self._visit = flow is not None
@@ -394,7 +395,7 @@ class PanelUI:
             self._base_key, self._base = key, self._base_layer(key, mapper, source, trainer is not None)
         canvas = self._base.copy()
         sim = np.asarray(rgb)
-        sheet = learn_open or result_sheet is not None
+        sheet = learn_open or result_sheet is not None or compare is not None
         if sheet:
             sim = (sim.astype(np.uint16) * 90 // 255).astype(np.uint8)        # dim the 3D view under a sheet
         canvas[SIM_Y:SIM_Y + SIM_H, SIM_X:SIM_X + SIM_W] = sim
@@ -409,7 +410,9 @@ class PanelUI:
         self.sim_clear = not sheet and not result
         if result and not sheet:
             self._result_banner(d, result)
-        if result_sheet is not None:
+        if compare is not None:
+            self._compare(d, *compare)
+        elif result_sheet is not None:
             self._result_sheet(img, d, *result_sheet)
         elif learn_open:
             self._learning(img, d, trainer, policy, policy_path, history, reference, state)
@@ -768,6 +771,43 @@ class PanelUI:
             msg = {"idle": "X 버튼: 지금까지 모은 시범으로 학습", "error": trainer.message}.get(st, trainer.message)
             for j, ln in enumerate(wrap(d, msg or "", self.f["body"], 560, 2)):
                 d.text((L + 18, P + 160 + 30 * j), ln, font=self.f["body"], fill=DIM if st != "error" else BAD)
+
+    def _compare(self, d, rows, layout_no: int) -> None:
+        """2x2: up to three live panes (same unseen layout, same time) and a score board."""
+        d.rectangle((SIM_X, SIM_Y, SIM_X + SIM_W - 1, SIM_Y + SIM_H - 1), fill=BG)
+        cells = [(SIM_X + 8, SIM_Y + 8), (SIM_X + 646, SIM_Y + 8), (SIM_X + 8, SIM_Y + 368), (SIM_X + 646, SIM_Y + 368)]
+        from teachabot.compare_view import PANE_H, PANE_W
+        for (r, rgb, status), (x, y) in zip(rows[:3], cells):
+            if rgb is not None:
+                d.paste(rgb, (x, y))
+            else:
+                d.rectangle((x, y, x + PANE_W, y + PANE_H), fill=PANEL)
+            d.rectangle((x, y, x + PANE_W, y + PANE_H), outline=r.color, width=3)
+            tw = d.textlength(r.label, font=self.f["smallb"])
+            d.rounded_rectangle((x + 8, y + 8, x + 24 + tw, y + 40), radius=8, fill=(16, 20, 28))
+            d.text((x + 16, y + 12), r.label, font=self.f["smallb"], fill=r.color)
+            ok = status.startswith("성공")
+            bad = status.startswith("실패") or status.startswith("불러오기") or status.startswith("정책")
+            sw = d.textlength(status, font=self.f["bodyb"])
+            d.rounded_rectangle((x + 8, y + PANE_H - 44, x + 26 + sw, y + PANE_H - 8), radius=8, fill=(16, 20, 28))
+            d.text((x + 17, y + PANE_H - 40), status, font=self.f["bodyb"], fill=GOOD if ok else BAD if bad else TXT)
+        bx, by = cells[3] if len(rows) >= 3 else cells[2]
+        bw = PANE_W if len(rows) >= 3 else SIM_W - 16
+        d.rounded_rectangle((bx, by, bx + bw, by + PANE_H), radius=14, fill=PANEL, outline=LINE, width=2)
+        d.text((bx + 18, by + 12), "같은 배치, 동시에 출발", font=self.f["h"], fill=TXT)
+        d.text((bx + 18, by + 46), f"처음 보는 배치 {layout_no + 1}번째 · 실제 AI가 직접 조종 (녹화 아님)",
+               font=self.f["tiny"], fill=DIM)
+        for j, (r, _, _) in enumerate(rows[:3]):
+            y = by + 82 + 88 * j
+            d.text((bx + 18, y), fit(d, r.label, self.f["bodyb"], bw - 36), font=self.f["bodyb"], fill=r.color)
+            d.text((bx + 18, y + 30), f"이 화면 {r.wins}/{r.shown}판 성공", font=self.f["small"], fill=TXT)
+            if r.measured is not None:
+                d.text((bx + 200, y + 30), "40판 시험", font=self.f["small"], fill=DIM)
+                d.rounded_rectangle((bx + 290, y + 34, bx + 290 + 200, y + 52), radius=8, fill=(50, 58, 74))
+                if r.measured > 0:
+                    d.rounded_rectangle((bx + 290, y + 34, bx + 290 + max(10, int(200 * r.measured)), y + 52),
+                                        radius=8, fill=r.color)
+                d.text((bx + 500, y + 30), f"{r.measured * 100:.0f}%", font=self.f["smallb"], fill=r.color)
 
     def _result_sheet(self, img, d, group: str, history: list[dict], reference: list[dict]) -> None:
         self._sheet(d, f"{group} 결과", "진행자: 캡처/홈으로 닫기")

@@ -80,10 +80,11 @@ def compose(canvas_bgr: np.ndarray, window: tuple[int, int], sim_hi_bgr: np.ndar
 class Display:
     def __init__(self, title: str, canvas: tuple[int, int], model: mujoco.MjModel | None = None,
                  sim_rect: tuple[int, int, int, int] | None = None, camera: str = "demo_cam",
-                 fill: float = 0.85):
+                 fill: float = 0.85, sharp_3d: bool = True):
         enable_dpi_awareness()
         self.title, self.cw, self.ch = title, canvas[0], canvas[1]
         self.model, self.sim_rect, self.camera = model, sim_rect, camera
+        self.sharp_3d = sharp_3d          # False: scale the 3D view with the canvas (saves ~4.5 ms per frame)
         sw, sh = screen_size()
         s = min(fill * sw / self.cw, fill * sh / self.ch)
         self._initial = (int(self.cw * s), int(self.ch * s))
@@ -107,7 +108,7 @@ class Display:
         """(canvas-size 3D view, window-size 3D view or None). Rendering stays in this thread
         (the GL context lives here); the window-size view only when the window is larger."""
         s, _, _ = fit((self.cw, self.ch), self.window)
-        if self.model is None or self.sim_rect is None or s <= 1.05:
+        if self.model is None or self.sim_rect is None or s <= 1.05 or not self.sharp_3d:
             fallback.update_scene(data, camera=self.camera)
             return fallback.render(), None
         _, _, rw, rh = self.sim_rect
