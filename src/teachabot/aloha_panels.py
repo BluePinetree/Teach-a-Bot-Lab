@@ -249,6 +249,7 @@ class PanelUI:
         self._nn_key = None
         self._nn_img: Image.Image | None = None
         self.trial: TrialView | None = None
+        self.sim_clear = True          # after draw(): nothing was drawn over the 3D view
 
     # ---------------------------------------------------------------- static layer
     def _labels(self, h: str, mapper, source: str, trainer_on: bool) -> list[tuple[str, str, str]]:
@@ -400,6 +401,7 @@ class PanelUI:
         self._status(d, mode_line, source, fps, episode, notice, frame)
         self._message(d, env, info, result, panel, state, flow, controllers, guide_text, trainer)
         self._record(d, history, check, flow, episodes)
+        self.sim_clear = not sheet and not result
         if result and not sheet:
             self._result_banner(d, result)
         if result_sheet is not None:

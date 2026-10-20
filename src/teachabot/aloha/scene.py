@@ -142,7 +142,8 @@ def build_spec(layout: TaskLayout = S1_LAYOUT, with_task_objects: bool = True, t
     xml = _inline_includes(assets["scene.xml"].decode("utf-8"), assets)
     spec = mujoco.MjSpec.from_string(xml, assets=assets)
     world = spec.worldbody
-    spec.visual.global_.offwidth, spec.visual.global_.offheight = 1920, 1080
+    # 2560x1440: the 3D view is re-rendered at window size on 4K screens (teachabot.display)
+    spec.visual.global_.offwidth, spec.visual.global_.offheight = 2560, 1440
     # A key light with shadows from the operator's side, so depth is readable on a TV.
     world.add_light(name="key", pos=[0.6, -1.0, 1.6], dir=[-0.35, 0.6, -0.75], castshadow=True,
                     diffuse=[0.55, 0.55, 0.55], specular=[0.1, 0.1, 0.1])

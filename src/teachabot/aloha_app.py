@@ -503,12 +503,14 @@ def main() -> None:
     episodes: list[dict] = []
     frame_ms: list[float] = []
     headless = autopilot is not None          # smoke tests never pop a window on the user's screen
-    if not headless:
-        cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
+    display = None
+    if not headless:                          # DPI-aware window, sharp scaling (teachabot.display); F: full screen
+        from teachabot.display import Display
         if args.ui == "panels":
-            cv2.resizeWindow(WINDOW, 1600, 900)           # F: full screen (the canvas is 1920x1080)
+            from teachabot.aloha_panels import CH, CW, SIM_H, SIM_W, SIM_X, SIM_Y
+            display = Display(WINDOW, (CW, CH), env.model, (SIM_X, SIM_Y, SIM_W, SIM_H))
         else:
-            cv2.resizeWindow(WINDOW, W, H)
+            display = Display(WINDOW, (W, H))
     learn_open = False                        # panels: the learning screen over the 3D view (Y / L)
     fullscreen = False
     stall = {"hand": None, "anchor": {}, "off": set(), "events": []}
@@ -772,7 +774,11 @@ def main() -> None:
                 panel = stall_panel(stall["hand"])
             if t_start - notice_t >= 0.5:            # reads a small status file; twice a second is plenty
                 notice, notice_t = provider.status_line(), t_start
-            out = hud.draw(renderer.render(), env, info, frame, mapper, provider.source, episode,
+            if display is not None:
+                sim_rgb, sim_hi = display.sim_render(env.data, renderer)
+            else:
+                sim_rgb, sim_hi = renderer.render(), None
+            out = hud.draw(sim_rgb, env, info, frame, mapper, provider.source, episode,
                            None if (panel and trainer and trainer.state != "idle") else result, check, fps,
                            panel=panel, mode_line=mode_line(),
                            controllers=dict(controllers) if policy is not None else None,
@@ -802,7 +808,7 @@ def main() -> None:
                     next_video_t += 1.0 / VIDEO_FPS
             key = 255
             if not headless:
-                cv2.imshow(WINDOW, cv2.cvtColor(out, cv2.COLOR_RGB2BGR))
+                display.show(out, sim_hi if getattr(hud, "sim_clear", False) else None)
                 key = cv2.waitKey(1) & 0xFF
                 if key == 27 or cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
                     break
