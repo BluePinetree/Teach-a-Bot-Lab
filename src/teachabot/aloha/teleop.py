@@ -31,7 +31,8 @@ HEIGHT_SOURCES = ("button", "tilt", "motion")   # tilt: hold L/R + bend the wris
 class TeleopSettings:
     move_source: str = "stick"
     wrist_source: str = "imu"
-    wrist_gain: float = 1.0          # gripper angle per Joy-Con angle
+    wrist_gain: float = 1.0          # gripper angle per Joy-Con angle (forward tilt -> pitch)
+    twist_gain: float = 1.5          # side tilt -> turn; 1.0 felt dull (user, 2026-10-20), pitch kept
     wrist_deadzone_deg: float = 4.0
     height_source: str = "button"    # button: hold L/R to lower, release to rise; tilt / motion: see HEIGHT_SOURCES
     height_gain: float = 1.0         # gripper speed per Joy-Con speed (motion)
@@ -109,9 +110,9 @@ class TeleopMapper:
         frac = (abs(bend) - s.tilt_deadzone_deg) / (s.tilt_full_deg - s.tilt_deadzone_deg)
         return -math.copysign(max(0.0, min(1.0, frac)) * s.tilt_max_vz, bend)   # front down = down
 
-    def _shape(self, angle: float, limit: float) -> float:
+    def _shape(self, angle: float, limit: float, gain: float | None = None) -> float:
         dz = math.radians(self.settings.wrist_deadzone_deg)
-        mag = max(0.0, abs(angle) - dz) * self.settings.wrist_gain
+        mag = max(0.0, abs(angle) - dz) * (self.settings.wrist_gain if gain is None else gain)
         return math.copysign(min(mag, limit), angle)
 
     def commands(self, frame: InputFrame, dt: float) -> dict[str, ArmCommand]:
@@ -132,7 +133,8 @@ class TeleopMapper:
                 fwd, right = self.wrist.angles(h, hand.accel, dt)       # once per frame: it low-passes
                 self.last_angles[h] = (fwd, right)
                 if self.wrist_ready(h):
-                    pitch, twist = self._shape(fwd, PITCH_LIMIT), self._shape(right, TWIST_LIMIT)
+                    pitch, twist = self._shape(fwd, PITCH_LIMIT), self._shape(right, TWIST_LIMIT,
+                                                                         self.settings.twist_gain)
             if mode == "tilt":
                 vz = self._tilt_vz(h, hand.buttons["shoulder"] and fwd is not None, fwd or 0.0)
             elif mode == "motion":

@@ -177,7 +177,7 @@ def test_teleop_wrist_angles_from_gravity():
     for _ in range(3):                             # first sample initialises the low-pass
         c = m.commands(_frame(_hand("left", accel=g_fwd), _hand("right", accel=g_right)), CONTROL_DT)
     assert math.degrees(c["left"].pitch) == pytest.approx(20, abs=0.5) and abs(c["left"].twist) < 1e-6
-    assert math.degrees(c["right"].twist) == pytest.approx(20, abs=0.5) and abs(c["right"].pitch) < 1e-6
+    assert math.degrees(c["right"].twist) == pytest.approx(20 * 1.5, abs=0.75) and abs(c["right"].pitch) < 1e-6   # twist_gain
 
 
 def test_teleop_wrist_deadzone():
