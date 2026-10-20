@@ -225,9 +225,14 @@ class Hud:
             d.rectangle((bx, y0 + 86 - int(52 * max(0.0, min(1.0, frac))), bx + 12, y0 + 86), fill=HAND_RGB[h] + (255,))
 
         if notice:    # controller notice from the input provider (Joy-Con about to sleep / re-pair)
-            nw = d.textlength(notice, font=self.f) + 40
+            font = self.f if d.textlength(notice, font=self.f) + 40 <= W - 32 else self.f_small
+            if d.textlength(notice, font=font) + 40 > W - 32:                            # never off screen
+                while len(notice) > 8 and d.textlength(notice + "…", font=font) + 40 > W - 32:
+                    notice = notice[:-1]
+                notice += "…"
+            nw = d.textlength(notice, font=font) + 40
             self._box(d, ((W - nw) / 2, y0 - 50, (W + nw) / 2, y0 - 10), alpha=210)
-            d.text(((W - nw) / 2 + 20, y0 - 45), notice, font=self.f, fill=(255, 200, 90))
+            d.text(((W - nw) / 2 + 20, y0 - 45), notice, font=font, fill=(255, 200, 90))
 
         self._box(d, (16, H - 62, W - 16, H - 16))
         guide = ("스틱: 이동  ·  L/R 누르고 있기: 내리기  ·  ZL/ZR 누르고 있기: 집기  ·  조이콘 기울이기: 손목"
