@@ -414,6 +414,7 @@ def main() -> None:
                          "classic = the earlier 1280x720 overlay screen")
     ap.add_argument("--sharp-3d", choices=("on", "off"), default="on",
                     help="window larger than 1920x1080: re-render the 3D view at window size (on) or just scale it (off, faster)")
+    ap.add_argument("--compare", action="store_true", help="panels: open the side-by-side comparison at start (C toggles)")
     ap.add_argument("--compare-rl", type=Path, default=COMPARE_RL,
                     help="panels: RL checkpoint for the side-by-side comparison (C key; shown at the visit result)")
     ap.add_argument("--seed", type=int, default=0)
@@ -431,7 +432,7 @@ def main() -> None:
     ap.add_argument("--ai-speed", type=float, default=0.5,
                     help="AI rounds play at this fraction of real time (same decisions, slower to watch); "
                          "back to 1x once a person takes an arm over")
-    ap.add_argument("--visit-no-practice", action="store_true", help="visit: skip the ⓪ practice step")
+    ap.add_argument("--visit-no-practice", action="store_true", help="visit: skip the practice step")
     ap.add_argument("--test-autopilot", action="store_true",
                     help="SMOKE TEST ONLY: a scripted controller plays the people's part and presses the keys, "
                          "to run the whole visit flow end to end (use a session code starting with _)")
@@ -527,7 +528,7 @@ def main() -> None:
         else:
             display = Display(WINDOW, (W, H))
     learn_open = False                        # panels: the learning screen over the 3D view (Y / L)
-    compare_open = False                      # panels: RL vs imitation side by side (C; default at the visit result)
+    compare_open = bool(args.compare)         # panels: RL vs imitation side by side (C; default at the visit result)
     was_result = False
     compare = None
     if args.ui == "panels" and (flow or policy is not None or args.policy):
