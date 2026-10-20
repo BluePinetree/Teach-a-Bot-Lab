@@ -213,8 +213,12 @@ class Hud:
                 wrist = "손목  고정 (기울기 보정 없음)"
             d.text((x0 + 14, y0 + 38), wrist, font=self.f_small, fill=(220, 225, 235))
             d.text((x0 + 14, y0 + 62), f"높이 {tg.pos[2] * 100:4.1f} cm", font=self.f_small, fill=(220, 225, 235))
-            if mapper.settings.height_source == "motion" and conn and hand.buttons["shoulder"] and not ai_hand:
-                d.text((x0 + 150, y0 + 62), "↕ 높이 조절 중", font=self.f_small, fill=(255, 225, 120))
+            if mapper.height_mode(h) in ("tilt", "motion") and conn and hand.buttons["shoulder"] and not ai_hand:
+                label = "↕ 높이 조절 중"
+                if mapper.height_mode(h) == "tilt":           # front down (+) = gripper down
+                    b = mapper.last_bend[h]
+                    label = f"높이 조절 {'↓' if b > 0 else '↑'}{abs(b):2.0f}°"
+                d.text((x0 + 150, y0 + 62), label, font=self.f_small, fill=(255, 225, 120))
             frac = (tg.pos[2] - 0.032) / (0.16 - 0.032)          # Z_MIN .. Z_CARRY
             bx = x0 + 296
             d.rectangle((bx, y0 + 34, bx + 12, y0 + 86), fill=(60, 66, 80, 220))
@@ -228,7 +232,10 @@ class Hud:
         self._box(d, (16, H - 62, W - 16, H - 16))
         guide = ("스틱: 이동  ·  L/R 누르고 있기: 내리기  ·  ZL/ZR 누르고 있기: 집기  ·  조이콘 기울이기: 손목"
                  "  ·  -/+: 손목 영점  ·  캡처/홈: 새 판")
-        if mapper.settings.height_source == "motion":
+        if mapper.settings.height_source == "tilt":
+            guide = ("스틱: 이동  ·  L/R 누른 채 손목을 위/아래로 꺾기: 높이 (떼면 멈춤)  ·  ZL/ZR 누르고 있기: 집기"
+                     "  ·  캡처/홈: 새 판")
+        elif mapper.settings.height_source == "motion":
             guide = ("스틱: 이동  ·  L/R 누른 채 조이콘을 위/아래로: 높이 (떼면 그 높이 유지)  ·  ZL/ZR 누르고 있기: 집기"
                      "  ·  캡처/홈: 새 판")
         if source == "keyboard":
@@ -382,9 +389,9 @@ def main() -> None:
     ap.add_argument("--time-limit", type=float, default=40.0)
     ap.add_argument("--move", choices=MOVE_SOURCES, default="stick", help="movement source (D9)")
     ap.add_argument("--wrist", choices=("imu", "off"), help="default: imu (S1), off (S2: the tray needs no wrist)")
-    ap.add_argument("--height", choices=("button", "motion"),
-                    help="button = hold L/R to lower; motion = hold L/R and move the Joy-Con up/down "
-                         "(default: S1 button, S2 motion)")
+    ap.add_argument("--height", choices=("button", "tilt", "motion"),
+                    help="button = hold L/R to lower; tilt = hold L/R and bend the wrist; motion = hold L/R "
+                         "and move the Joy-Con up/down (shelved) (default: S1 button, S2 tilt)")
     ap.add_argument("--height-gain", type=float, default=1.0, help="motion: gripper speed per Joy-Con speed")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--check", action="store_true", help="noon checkpoint checklist")
@@ -415,7 +422,7 @@ def main() -> None:
     else:
         env = AlohaSortEnv(time_limit=args.time_limit)
     args.wrist = args.wrist or ("off" if args.task == "s2" else "imu")
-    args.height = args.height or ("motion" if args.task == "s2" else "button")
+    args.height = args.height or ("tilt" if args.task == "s2" else "button")
     mapper = TeleopMapper(TeleopSettings(move_source=args.move, wrist_source=args.wrist,
                                          height_source=args.height, height_gain=args.height_gain),
                           MotionCalibration.load(MOTION_CAL_PATH))
