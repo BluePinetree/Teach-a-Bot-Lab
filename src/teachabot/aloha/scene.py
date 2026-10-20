@@ -92,13 +92,14 @@ def _inline_includes(xml: str, assets: dict[str, bytes]) -> str:
     return _INCLUDE.sub(body, xml)
 
 
-# -- S2 "양팔 트레이 들기": one tray with a handle at each end, a cube riding on it, a goal mat ----
+# -- S2 "양팔 트레이 들기": one tray with a handle at each end, a ball riding on it, a goal mat ----
+# Option B (user, 2026-10-20): a ball and a low rim, so carrying smoothly and lifting together matter.
 S2_PLATE_HALF = (0.15, 0.08, 0.006)      # 30 x 16 x 1.2 cm
-S2_RIM_H, S2_RIM_T = 0.012, 0.006
+S2_RIM_H, S2_RIM_T = 0.006, 0.006       # 0.6 cm: a jerky carry throws the ball off, a smooth one keeps it (D17)
 S2_HANDLE_HALF = (0.015, 0.0125, 0.025)  # 3 x 2.5 x 5 cm, gripped across its 2.5 cm (y)
 S2_HANDLE_X = 0.13                       # handle centres at x = +-13 cm from the tray centre
-S2_TRAY_MASS, S2_CUBE_MASS = 0.25, 0.05
-S2_CUBE_FRICTION = 0.5                   # a tilted tray lets the cube slide (rim stops small tilts)
+S2_TRAY_MASS, S2_BALL_MASS = 0.25, 0.05
+S2_BALL_R = 0.02
 S2_GOAL = (0.0, 0.22)                    # goal mat centre (visual only)
 S2_GOAL_HALF = (0.07, 0.06)              # tray centre must end inside this
 S2_TRAY_SPAWN = ((-0.03, 0.03), (-0.10, 0.0))
@@ -124,10 +125,10 @@ def _add_s2_objects(world: mujoco.MjsBody) -> None:
                       pos=[sign * S2_HANDLE_X, 0, pz + hz], mass=0.025, rgba=[r, g, b, 1.0], friction=[1.5, 0.01, 0.001],
                       condim=4)
         tray.add_site(name=f"s2_handle_{hand}", pos=[sign * S2_HANDLE_X, 0, pz + hz])
-    cube = world.add_body(name="s2_cube", pos=[0, -0.05, 2 * pz + CUBE_HALF + 0.002])
-    cube.add_freejoint(name="s2_cube_joint")
-    cube.add_geom(name="s2_cube", type=mujoco.mjtGeom.mjGEOM_BOX, size=[CUBE_HALF] * 3, mass=S2_CUBE_MASS,
-                  rgba=list(TRAY_YELLOW), friction=[S2_CUBE_FRICTION, 0.01, 0.001], condim=4)
+    ball = world.add_body(name="s2_ball", pos=[0, -0.05, 2 * pz + S2_BALL_R + 0.002])
+    ball.add_freejoint(name="s2_ball_joint")
+    ball.add_geom(name="s2_ball", type=mujoco.mjtGeom.mjGEOM_SPHERE, size=[S2_BALL_R, 0, 0], mass=S2_BALL_MASS,
+                  rgba=list(TRAY_YELLOW), friction=[0.5, 0.005, 0.0001])
     gx, gy = S2_GOAL_HALF
     goal = world.add_body(name="s2_goal", pos=[S2_GOAL[0], S2_GOAL[1], 0.0006])
     goal.add_geom(type=mujoco.mjtGeom.mjGEOM_BOX, size=[gx + px, gy + py, 0.0005], contype=0, conaffinity=0,

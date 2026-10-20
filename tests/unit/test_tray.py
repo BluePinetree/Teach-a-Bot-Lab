@@ -19,30 +19,35 @@ def test_s2_reset_is_reproducible_and_starts_unsolved(env):
     np.testing.assert_allclose(a, b)
     assert a.shape == (S2_OBS_DIM,)
     info = env.info()
-    assert env.cube_on_tray() and not info.success and not info.failed and not env.in_goal()
+    assert env.ball_on_tray() and not info.success and not info.failed and not env.in_goal()
 
 
-def test_s2_scripted_carry_succeeds(env):
-    """Capability check with a test-only scripted controller (both arms lift together)."""
+def _carry(env, seeds, **kw):
     ok = 0
-    for s in range(10):
+    for s in seeds:
         env.reset(s)
-        c = ScriptedTrayCarrier()
+        c = ScriptedTrayCarrier(**kw)
         while True:
             _, info = env.step(c.commands(env))
-            if info.done:
+            if info.done or env.t > 20:
                 break
         ok += info.success
-    assert ok >= 9
+    return ok
 
 
-def test_s2_cube_off_tray_fails_with_reason(env):
+def test_s2_smooth_carry_keeps_the_ball_and_a_jerky_one_spills_it(env):
+    """The task property option B is built on (test-only scripted controller, both arms lift together)."""
+    assert _carry(env, range(10), smooth=True) >= 9
+    assert _carry(env, range(10), smooth=False) <= 2
+
+
+def test_s2_ball_off_tray_fails_with_reason(env):
     env.reset(0)
-    c = env._tcube_qadr
+    c = env._ball_qadr
     env.data.qpos[c:c + 3] = (0.35, -0.2, 0.03)          # on the table, beside the tray
     for _ in range(5):
         _, info = env.step({})
-    assert info.failed and info.reason == "cube_off"
+    assert info.failed and info.reason == "ball_off"
 
 
 def test_s2_timeout_reason():

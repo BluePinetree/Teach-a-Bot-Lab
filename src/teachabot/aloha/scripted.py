@@ -55,14 +55,15 @@ class ScriptedSorter:
 
 class ScriptedTrayCarrier:
     """S2 reference: both arms grip the handles, lift together, carry, lower, release.
-    `lag` delays the right arm's lift (seconds) to test what an unsynchronised lift does."""
+    `lag` delays the right arm's lift (seconds); `smooth` ramps the carry speed up over the
+    first 5 cm and down over the last 8 cm instead of starting and stopping at full speed."""
 
-    def __init__(self, lag: float = 0.0):
-        self.lag = lag
+    def __init__(self, lag: float = 0.0, smooth: bool = True):
+        self.lag, self.smooth = lag, smooth
         self.reset()
 
     def reset(self) -> None:
-        self.phase, self.t_phase, self.offset = 0, 0.0, None
+        self.phase, self.t_phase, self.offset, self.carry_start = 0, 0.0, None, None
 
     def commands(self, env) -> dict:
         from .scene import S2_GOAL
@@ -92,10 +93,19 @@ class ScriptedTrayCarrier:
             if all(env.targets[h].pos[2] >= Z_CARRY - 1e-6 for h in HANDS):
                 self.phase = 4
         elif ph == 4:          # carry: identical move for both arms keeps the tray rigid between them
-            goal = np.asarray(S2_GOAL)
-            lead = ScriptedSorter._goto(env, "left", goal + self.offset["left"], +1, True)
-            out = {h: ArmCommand(move=lead.move, vz=+1, grip=True) for h in HANDS}
-            if np.linalg.norm(env.targets["left"].pos[:2] - (goal + self.offset["left"])) < 0.003:
+            goal = np.asarray(S2_GOAL) + self.offset["left"]
+            pos = env.targets["left"].pos[:2]
+            if self.carry_start is None:
+                self.carry_start = pos.copy()
+            d = goal - pos
+            dist = float(np.linalg.norm(d))
+            if self.smooth:
+                k = min(1.0, dist / 0.08, 0.15 + float(np.linalg.norm(pos - self.carry_start)) / 0.05)
+            else:
+                k = min(1.0, dist / (MAX_SPEED * CONTROL_DT))
+            v = d / max(dist, 1e-9) * k
+            out = {h: ArmCommand(move=(float(v[0]), float(v[1])), vz=+1, grip=True) for h in HANDS}
+            if dist < 0.003:
                 self.phase = 5
         elif ph == 5:          # lower
             out = {h: ArmCommand(vz=-1, grip=True) for h in HANDS}
