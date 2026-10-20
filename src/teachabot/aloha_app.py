@@ -48,6 +48,15 @@ HAND_KO = {"left": "왼손", "right": "오른손"}
 HAND_RGB = {"left": (70, 130, 245), "right": (255, 150, 40)}
 WINDOW = "Teach-a-Bot Lab - ALOHA"
 PRACTICE_SEED_BASE = 3_000_000   # AI-mode layouts: unseen in training, separate from the test layouts
+VISIT_DEMO_SEED_BASE = 4_000_000  # visit demos: each group gets its own block, never the base demos' layouts
+
+
+def visit_demo_seed(group: str) -> int:
+    """First layout seed for a group's practice and demos. The 2026-10-20 rehearsal recorded its demos
+    on seeds 2-4, the same layouts as the base s01:5 (seeds 1-5): 10.7% vs 22.3% for 8 distinct layouts
+    (3 training seeds x 100 test layouts)."""
+    import zlib
+    return VISIT_DEMO_SEED_BASE + 1000 * (zlib.crc32(group.encode("utf-8")) % 1000)
 TAKEOVER_STICK = 0.35            # stick deflection that hands an arm to the person
 STALL_S, STALL_M = 1.5, 0.01     # an AI arm whose target moves < 1 cm in 1.5 s (sim) is "stuck"
 VIDEO_FPS = 30
@@ -391,6 +400,8 @@ def main() -> None:
     hud = Hud(args.task)
     check = S1Check() if args.check else None
     seed, episode = args.seed, 1
+    if args.visit and args.seed == 0:
+        seed = visit_demo_seed(args.visit)
     if args.policy and args.seed == 0:
         seed = PRACTICE_SEED_BASE
     env.reset(seed)

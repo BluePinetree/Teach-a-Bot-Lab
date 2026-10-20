@@ -99,3 +99,12 @@ def test_base_session_can_be_limited_to_its_first_demos(tmp_path):
     assert [(d.meta["session"], d.meta["layout_seed"]) for d in picked] == [("s01", 0), ("s01", 1), ("1조", 0)]
     assert LiveTrainer(tmp_path, sessions=["s01:2", "1조"]).data_counts() == (3, 0)
     assert LiveTrainer(tmp_path, sessions=["s01"]).data_counts() == (4, 1)
+
+
+def test_visit_demo_layouts_are_per_group_and_away_from_other_ranges():
+    from teachabot.aloha_app import PRACTICE_SEED_BASE, VISIT_DEMO_SEED_BASE, visit_demo_seed
+    a, b = visit_demo_seed("1조"), visit_demo_seed("2조")
+    assert a != b and a == visit_demo_seed("1조")
+    for s in (a, b):
+        assert VISIT_DEMO_SEED_BASE <= s < VISIT_DEMO_SEED_BASE + 1_000_000      # not s01 (0-10), test (1e6),
+        assert s > PRACTICE_SEED_BASE + 1_000                                   # tuning (2e6), AI rounds (3e6)
