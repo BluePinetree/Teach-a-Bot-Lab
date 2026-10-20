@@ -9,6 +9,10 @@ the same recording can be re-used for every variant.
 
     .venv\\Scripts\\python.exe tests\\manual\\record_motion_strokes.py --surface desk
     .venv\\Scripts\\python.exe tests\\manual\\record_motion_strokes.py --surface air
+    .venv\\Scripts\\python.exe tests\\manual\\record_motion_strokes.py --surface vertical   # up/down (D18)
+
+Vertical trials (scripts/analyze_vertical.py) are up then down, at normal and slow
+speed, plus "tilt only" trials that must NOT change the height.
 
 Trial order keeps the Joy-Con near its start: forward then back, right then left.
 Press B (right Joy-Con) or the down arrow (left Joy-Con) during a trial to mark
@@ -29,24 +33,30 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from teachabot.input.joycon_device import JoyConDevice  # noqa: E402
 
-DIR_KO = {"forward": "앞으로", "back": "뒤로(몸 쪽으로)", "right": "오른쪽으로", "left": "왼쪽으로"}
+DIR_KO = {"forward": "앞으로", "back": "뒤로(몸 쪽으로)", "right": "오른쪽으로", "left": "왼쪽으로",
+          "up": "위로", "down": "아래로", "up_slow": "천천히 위로", "down_slow": "천천히 아래로",
+          "tilt": "높이는 그대로 두고 앞으로 기울였다가 되돌리기"}
 BLOCK = [("forward", 10), ("back", 10), ("right", 10), ("left", 10),
          ("forward", 20), ("back", 20), ("right", 20), ("left", 20)]
+BLOCK_V = [("up", 10), ("down", 10), ("up", 20), ("down", 20),
+           ("up_slow", 10), ("down_slow", 10), ("tilt", 0)]
 PHASES = (("ready", 2.0), ("move", 2.5), ("hold", 1.5))
 BAD_BUTTON = {"R": "b", "L": "down"}
 SURFACE_KO = {"desk": "책상 위에서 미끄러뜨리기 (앞면이 위로 눕혀서)",
-              "air": "공중에서 평소 쥐는 자세로, 기울이지 말고 손 전체를 옮기기"}
+              "air": "공중에서 평소 쥐는 자세로, 기울이지 말고 손 전체를 옮기기",
+              "vertical": "공중에서 평소 쥐는 자세로, 기울이지 말고 손 전체를 위/아래로 옮기기"}
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--surface", choices=["desk", "air"], required=True)
+    ap.add_argument("--surface", choices=["desk", "air", "vertical"], required=True)
     ap.add_argument("--hand", choices=["R", "L"], default="R")
     ap.add_argument("--reps", type=int, default=2)
     args = ap.parse_args()
     os.system("")
 
-    trials = [(d, cm) for _ in range(args.reps) for d, cm in BLOCK]
+    block = BLOCK_V if args.surface == "vertical" else BLOCK
+    trials = [(d, cm) for _ in range(args.reps) for d, cm in block]
     dev = JoyConDevice(args.hand)
     log_path = ROOT / "data" / "logs" / f"strokes_{args.surface}_{args.hand}_{datetime.now():%Y%m%d_%H%M%S}.jsonl"
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -81,7 +91,8 @@ def main() -> int:
               f"방식: {SURFACE_KO[args.surface]}",
               f"손: {'오른쪽' if args.hand == 'R' else '왼쪽'} 조이콘   시행 {len(trials)}회 (약 {len(trials) * 6 // 60 + 1}분)",
               "준비물: 자(또는 A4 용지: 짧은 변 21cm ≈ 20cm, 그 절반 ≈ 10cm)",
-              "시작 위치를 정하고, 앞/뒤/좌/우로 10cm·20cm 갈 지점을 눈으로 확인해 두세요.", "",
+              ("자를 세워 두고 위/아래로 10cm·20cm 갈 높이를 눈으로 확인해 두세요." if args.surface == "vertical"
+               else "시작 위치를 정하고, 앞/뒤/좌/우로 10cm·20cm 갈 지점을 눈으로 확인해 두세요."), "",
               f">>> 준비되면 {'A' if args.hand == 'R' else '→'} 버튼을 누르세요"])
         if s and s.buttons.get(start_btn):
             break
@@ -118,9 +129,10 @@ def main() -> int:
                 left = dur - (now - t0)
                 bar = "#" * int(30 * (now - t0) / dur)
                 if phase == "ready":
-                    head = f">>> 준비: 가만히 ({left:3.1f}초)   다음: {DIR_KO[direction]} {cm}cm"
+                    head = f">>> 준비: 가만히 ({left:3.1f}초)   다음: {DIR_KO[direction]}" + (f" {cm}cm" if cm else "")
                 elif phase == "move":
-                    head = f">>> 지금! {DIR_KO[direction]} {cm}cm 옮기고 멈추세요"
+                    head = (f">>> 지금! {DIR_KO[direction]}" if direction == "tilt"
+                            else f">>> 지금! {DIR_KO[direction]} {cm}cm 옮기고 멈추세요")
                 else:
                     head = ">>> 멈춘 채로 가만히"
                 show([f"Teach-a-Bot Lab - 이동 실측 녹화  [{args.surface}]   시행 {i + 1}/{len(trials)}", "",
