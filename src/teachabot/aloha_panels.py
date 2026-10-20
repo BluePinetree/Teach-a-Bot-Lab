@@ -424,17 +424,19 @@ class PanelUI:
         else:
             name = "AI 조종" if controllers else ("시범 기록" if mode_line and "시범 기록" in mode_line else "조종")
             chips = [(name, "current")]
-        widths = [d.textlength(t, font=self.f["chip"]) + 36 for t, _ in chips]
-        x = max(470, (CW - sum(widths) - 26 * (len(chips) - 1)) / 2)
+        gap = 26 if len(chips) <= 6 else 18                  # 9 visit steps must clear the clock on the right
+        widths = [d.textlength(t, font=self.f["chip"]) + (36 if len(chips) <= 6 else 28) for t, _ in chips]
+        x = max(440, (CW - sum(widths) - gap * (len(chips) - 1)) / 2)
         for (t, st), w in zip(chips, widths):
             cur = st == "current"
             d.rounded_rectangle((x, 14, x + w, 50), radius=18, fill=YEL if cur else (40, 47, 62),
                                 outline=None if cur else LINE)
-            d.text((x + 18, 18), t, font=self.f["chip"], fill=(20, 20, 20) if cur else (GOOD if st == "done" else DIM))
+            d.text((x + (w - d.textlength(t, font=self.f["chip"])) / 2, 18), t, font=self.f["chip"],
+                   fill=(20, 20, 20) if cur else (GOOD if st == "done" else DIM))
             x += w
             if (t, st) != chips[-1]:
-                d.text((x + 6, 18), "›", font=self.f["chip"], fill=DIM)
-                x += 26
+                d.text((x + gap / 2 - 4, 18), "›", font=self.f["chip"], fill=DIM)
+                x += gap
         d.text((CW - 250, 10), f"{info.time:5.1f} 초", font=self.f["big"], fill=TXT)
         if time_limit and time_limit < 1e8:
             d.text((CW - 84, 24), f"/ {time_limit:.0f}", font=self.f["small"], fill=DIM)
