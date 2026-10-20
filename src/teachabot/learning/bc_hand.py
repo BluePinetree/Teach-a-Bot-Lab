@@ -167,7 +167,8 @@ class HandPolicy:
         np.savez(path, meta=json.dumps({**self.meta, "kind": self.kind}), n_layers=len(self.weights), **arrays)
 
 
-def train_hand_bc(demos: list[Demo], cfg: HandBCConfig = HandBCConfig(), log=None) -> HandPolicy:
+def train_hand_bc(demos: list[Demo], cfg: HandBCConfig = HandBCConfig(), log=None, progress=None) -> HandPolicy:
+    """progress(iteration, iters, loss, net): called every 50 iterations (screen progress, live weights)."""
     import torch
     from torch import nn
 
@@ -203,6 +204,8 @@ def train_hand_bc(demos: list[Demo], cfg: HandBCConfig = HandBCConfig(), log=Non
         loss.backward()
         opt.step()
         sched.step()
+        if progress and (it % 50 == 0 or it == cfg.iters - 1):
+            progress(it + 1, cfg.iters, float(loss.item()), net)
         if log and (it % 1000 == 0 or it == cfg.iters - 1):
             log(f"iter {it:5d}  loss {loss.item():.4f} (cont {loss_c.item():.4f}, grip {loss_g.item():.4f})")
     weights = [(m.weight.detach().numpy().T.astype(np.float64), m.bias.detach().numpy().astype(np.float64))

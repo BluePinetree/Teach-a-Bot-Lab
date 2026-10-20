@@ -15,6 +15,8 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
+
 from .bc_hand import HandBCConfig, train_hand_bc
 from .demos import DEMO_DIR, load_demos
 from .evaluate import evaluate_policy
@@ -58,6 +60,11 @@ class LiveTrainer:
         self.history: list[dict] = []
         self.t_started = 0.0
         self._thread: threading.Thread | None = None
+        # for the learning panel: progress, a copy of the network every few hundred iterations,
+        # and the new policy file as soon as it is saved (the screen lets it try a layout)
+        self.progress = {"it": 0, "iters": 1, "loss": [], "eval_done": 0, "eval_total": episodes}
+        self.live_weights: list | None = None
+        self.pending_policy: Path | None = None
 
     def add_baseline(self, policy_path: Path) -> None:
         """Show the starting policy's own evaluation (from its JSON, if it was evaluated)."""
@@ -83,9 +90,20 @@ class LiveTrainer:
             return False
         self.state, self.message, self.result = "training", "", None
         self.t_started = time.perf_counter()
+        self.progress = {"it": 0, "iters": self.cfg.iters, "loss": [], "eval_done": 0, "eval_total": self.episodes}
+        self.live_weights, self.pending_policy = None, None
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         return True
+
+    def _on_progress(self, it: int, iters: int, loss: float, net) -> None:
+        self.progress["it"], self.progress["iters"] = it, iters
+        self.progress["loss"].append(loss)
+        if it % 250 == 0 or it == iters:                 # ~70k floats: cheap to copy now and then
+            import torch
+            with torch.no_grad():
+                self.live_weights = [m.weight.detach().numpy().T.copy() for m in net
+                                     if isinstance(m, torch.nn.Linear)]
 
     def _run(self) -> None:
         try:
@@ -95,13 +113,16 @@ class LiveTrainer:
             n_demo = sum(d.kind == "demo" for d in demos)
             n_take = sum(d.kind == "takeover" for d in demos)
             self.message = f"시범 {n_demo}개 + 개입 {n_take}번으로 학습 중"
-            pol = train_hand_bc(demos, self.cfg)
+            pol = train_hand_bc(demos, self.cfg, progress=self._on_progress)
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             path = POLICY_DIR / f"live_{stamp}_d{n_demo}_t{n_take}.npz"
             pol.save(path)
+            self.live_weights = [np.asarray(w) for w, _ in pol.weights]
+            self.pending_policy = path
             self.state = "evaluating"
             self.message = f"처음 보는 배치 {self.episodes}판으로 시험 중"
-            res = evaluate_policy(path, episodes=self.episodes, workers=self.workers)
+            res = evaluate_policy(path, episodes=self.episodes, workers=self.workers,
+                                  on_episode=lambda k, n: self.progress.update(eval_done=k))
             group = self.sessions[-1].partition(":")[0] if self.sessions else None
             n_base = sum(d.kind == "demo" and d.meta["session"] != group for d in demos) if group else 0
             label = self.label_prefix + f"시범 {n_demo - n_base}" + (f" + 개입 {n_take}" if n_take else "")                 + (f" (+기본 {n_base})" if n_base else "")

@@ -176,3 +176,8 @@ def test_live_trainer_retrains_and_evaluates(scripted_demos, tmp_path):
     assert t.state == "done", t.message
     assert t.result["episodes"] == 2 and t.history[-1] is t.result
     assert (tmp_path / "policies" / Path(t.result["policy"]).name).exists()
+    # learning-screen hooks: training progress, a copy of the weights, the test count, the new file
+    assert t.progress["it"] == t.progress["iters"] == 100 and len(t.progress["loss"]) >= 2
+    assert t.progress["eval_done"] == t.progress["eval_total"] == 2
+    assert [w.shape for w in t.live_weights][0][0] == HAND_OBS_DIM
+    assert t.pending_policy == Path(t.result["policy"])

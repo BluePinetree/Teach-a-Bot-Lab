@@ -66,11 +66,16 @@ def _worker(layout_seed: int) -> dict:
 
 
 def evaluate_policy(policy_path: Path, episodes: int = 20, workers: int = 10, time_limit: float = 40.0,
-                    seed_base: int = EVAL_SEED_BASE) -> EvalResult:
+                    seed_base: int = EVAL_SEED_BASE, on_episode=None) -> EvalResult:
+    """on_episode(done, total): called as each layout finishes (results stay in seed order)."""
     t0 = time.perf_counter()
     seeds = [seed_base + k for k in range(episodes)]
     ctx = mp.get_context("spawn")
     with ctx.Pool(min(workers, episodes), initializer=_init_worker, initargs=(str(policy_path), time_limit)) as pool:
-        eps = pool.map(_worker, seeds)
+        eps = []
+        for e in pool.imap(_worker, seeds):
+            eps.append(e)
+            if on_episode:
+                on_episode(len(eps), episodes)
     return EvalResult(float(np.mean([e["success"] for e in eps])), float(np.mean([e["cubes"] for e in eps])), eps,
                       time.perf_counter() - t0)
