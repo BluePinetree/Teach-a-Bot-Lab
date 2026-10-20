@@ -493,9 +493,10 @@ def main() -> None:
     policy_path = args.policy
     retrains: list[dict] = []
     video = None
-    if args.video:
-        args.video.parent.mkdir(parents=True, exist_ok=True)
-        video = "pending"                     # opened at the first frame (its size depends on --ui)
+    if args.video:                            # encoded in a background thread (teachabot.video)
+        from teachabot.video import VideoSink
+        video = VideoSink(args.video, VIDEO_FPS)
+    video_stats = None
     next_video_t = 0.0
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -804,16 +805,15 @@ def main() -> None:
             # open does not fill the disk; the video simply skips the waiting time
             recording = (state != "waiting" or (trainer is not None and trainer.state != "idle")
                          or (flow is not None and flow.step == "result"))
-            if video == "pending":
-                video = cv2.VideoWriter(str(args.video), cv2.VideoWriter_fourcc(*"mp4v"), VIDEO_FPS,
-                                        (out.shape[1], out.shape[0]))
             if video is not None and not recording:
                 next_video_t = time.perf_counter() - t_run
             if video is not None and recording:
                 now_v = time.perf_counter() - t_run
+                copies = 0
                 while next_video_t <= now_v:
-                    video.write(cv2.cvtColor(out, cv2.COLOR_RGB2BGR))
+                    copies += 1
                     next_video_t += 1.0 / VIDEO_FPS
+                video.write(out, copies)
             key = 255
             if not headless:
                 display.show(out, sim_hi if getattr(hud, "sim_clear", False) else None)
@@ -844,8 +844,8 @@ def main() -> None:
     finally:
         recorder.close()
         provider.disconnect()
-        if video is not None and video != "pending":
-            video.release()
+        if video is not None:
+            video_stats = video.close()
         if not headless:
             cv2.destroyAllWindows()
         summary = {"created": stamp, "task": args.task, "input": provider.source, "move": args.move, "wrist": args.wrist,
@@ -858,7 +858,7 @@ def main() -> None:
                    "input_log": recorder.path.name, "record_session": args.record,
                    "demos_saved": writer.saved if writer else None,
                    "policy": str(args.policy) if args.policy else None,
-                   "retrains": retrains, "video": str(args.video) if args.video else None,
+                   "retrains": retrains, "video": str(args.video) if args.video else None, "video_frames": video_stats,
                    "visit": flow.summary() if flow else None}
         path = LOG_DIR / f"aloha_{args.task}_{'check' if check else ('visit' if flow else 'run')}_{stamp}.json"
         path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
