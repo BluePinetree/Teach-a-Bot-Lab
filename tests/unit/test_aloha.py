@@ -160,8 +160,8 @@ def test_teleop_tilt_height_bends_relative_to_the_press():
 
     assert run(10, held=False) == 0.0              # released: holds the height whatever the angle
     assert run(10, held=True, frames=1) == 0.0     # the press angle (10 deg) is the reference
-    assert run(12, held=True) == 0.0               # inside the 4 deg deadzone
-    assert run(20, held=True) == pytest.approx(-0.5 * 6 / 16, abs=0.02)   # 10 deg down: slow down
+    assert run(12, held=True) == 0.0               # inside the 2.5 deg deadzone
+    assert run(16, held=True) == pytest.approx(-0.5 * 3.5 / 9.5, abs=0.02)   # 6 deg down: slow down
     assert run(40, held=True) == pytest.approx(-0.5, abs=1e-6)            # full bend: capped
     assert run(-10, held=True) == pytest.approx(0.5, abs=1e-6)            # bent up: up
     assert run(-10, held=False) == 0.0 and m.tilt_ref["left"] is None

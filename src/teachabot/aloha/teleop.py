@@ -37,8 +37,8 @@ class TeleopSettings:
     height_gain: float = 1.0         # gripper speed per Joy-Con speed (motion)
     # tilt: while L/R is held, bending the wrist from where it was at the press moves the gripper;
     # front of the Joy-Con down = down. Speed grows from 0 at the deadzone to tilt_max_vz at tilt_full_deg.
-    tilt_deadzone_deg: float = 4.0
-    tilt_full_deg: float = 20.0
+    tilt_deadzone_deg: float = 2.5   # 4 / 20 deg felt too dull in the first try (2026-10-20)
+    tilt_full_deg: float = 12.0
     tilt_max_vz: float = 0.5         # fraction of MAX_VZ (0.15 m/s): the 13 cm range takes ~1 s at full bend
 
 
