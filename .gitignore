@@ -19,3 +19,5 @@ data/policies/
 data/rl_runs/
 data/videos/
 data/runtime/
+# data-v1 release asset (unpacked from teachabot-data-v1.zip)
+data/RELEASE_MANIFEST.json
